@@ -141,3 +141,22 @@ rebuild — a stale DLL against a newer server fails at plugin load rather than 
 - **`CLAUDE.md`** (this file) — for people and agents *working on* the plugin.
 - **`.claude/PLAN.md`** — the design record: investigation, decisions and their rationale, phasing.
   Update it when a decision changes, and note the reversal rather than silently rewriting history.
+- **`.claude/memory/`** — durable facts that fit neither of the above. See below.
+
+## Memory
+
+Agents keep persistent notes. **This repo carries its own set in `.claude/memory/`**, committed so it
+travels with a clone. Read `.claude/memory/MEMORY.md` at the start of a session — it is the index, one
+line per memory, and the memories themselves are one file each with `name` / `description` /
+`metadata.type` frontmatter. Cross-link with `[[name]]`.
+
+**Only `project` and `reference` memories go in the repo.** This is a public repository: anything about
+a particular person or workstation — `user` (who someone is, their preferences) and `feedback` (how an
+agent should work with them) — stays in the agent's own local memory directory and is never committed.
+The same applies to anything naming a private project or a local workspace path that isn't already
+public in `PLAN.md`.
+
+Before writing a memory, check it doesn't belong in `PLAN.md` (a design decision) or this file (a
+convention or gotcha) instead — those are the primary records and a memory that restates them will
+drift out of sync. Update an existing memory rather than adding a near-duplicate, and delete ones that
+turn out to be wrong.

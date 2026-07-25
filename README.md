@@ -14,6 +14,10 @@ gradually or run both indefinitely.
 > not send messages yet. It is safe to install — it simply does nothing. Follow the repository for
 > progress.
 
+## AI Disclaimer
+
+This project is an attempt to let Claude pretty much run the show when it comes to maintaining parity with both the Horde-side and the Discord-side of the notification sink. It is also serving as a test for how Claude can demonstratibly handle boiler-plate to cut down on human-brain time.
+
 ## Requirements
 
 - A Horde server you can copy files into and restart
