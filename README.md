@@ -27,6 +27,24 @@ This project is an attempt to let Claude pretty much run the show when it comes 
 
 There are no published binaries yet, so installation means building from source.
 
+### Engine compatibility
+
+This plugin compiles against internal Horde interfaces that carry no compatibility guarantee, so the
+engine it was built against matters. The current code is built and verified against:
+
+| | |
+|---|---|
+| Unreal Engine | **5.8.0** (`BranchName` UE5) |
+| Horde server binaries | built 2026-07-08 |
+
+Check your own with `Engine/Build/Build.version`. A source build reports `"Changelist": 0`, so there is
+usually no changelist to compare against — the version and the build date are the practical identity.
+The `HordeServer.*` assemblies are all stamped `1.0.0.0` and cannot be used to tell releases apart.
+
+Other 5.8 engines will very likely work; the plugin uses a small, stable part of the interface. Nothing
+is lost by trying, because a mismatch fails loudly at server startup rather than misbehaving quietly —
+see [Troubleshooting](#troubleshooting).
+
 ## Installation
 
 ### 1. Point the build at your Horde server
@@ -177,6 +195,17 @@ messages there. Check that channel ids are numeric ids rather than names.
 **Rebuild this plugin whenever you upgrade Horde.** It compiles against internal Horde interfaces that
 carry no compatibility guarantee, and a stale plugin fails at server startup rather than degrading
 gracefully. Rebuilding is a good step to add to your Horde deployment process.
+
+The version it is currently built against is recorded under
+[Engine compatibility](#engine-compatibility). To confirm a rebuild took without booting the full
+server — which needs MongoDB and Redis — copy the DLL into place and run the bundled probe:
+
+```
+dotnet run --project tools/PluginProbe -c Development
+```
+
+It replicates Horde's plugin discovery and reports whether the server would load the plugin. See
+[CLAUDE.md](CLAUDE.md) for details.
 
 ## Contributing
 

@@ -13,4 +13,7 @@
 
   <Project Path="HordeServer.Discord/HordeServer.Discord.csproj" />
 
+  <!-- Phase 0 verification harness; in the solution so it keeps compiling against the engine. -->
+  <Project Path="tools/PluginProbe/PluginProbe.csproj" />
+
 </Solution>

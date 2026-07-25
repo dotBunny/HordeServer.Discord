@@ -311,6 +311,8 @@ HordeServer.Discord/                         (this repo)
 │     ├─ DiscordGateway.cs                ▫️ ClientWebSocket: identify/heartbeat/resume/dispatch
 │     ├─ DiscordEmbed.cs / Components.cs  ▫️ builders
 │     └─ DiscordInteractionHandler.cs     ▫️ buttons + modal → IssueService verbs
+├─ tools/PluginProbe/                     ✅ Phase 0 verification harness - replicates
+│                                            ServerApp.CreatePluginCollection without Mongo/Redis
 └─ HordeServer.Discord.Tests/             ▫️ MSTest, mirroring HordeServer.Experimental.Tests
 ```
 
@@ -384,9 +386,25 @@ run against the real server output directory with the plugin DLL dropped in:
 Not yet done: booting the real server (needs Mongo + Redis) to watch the sink receive live callbacks.
 That is the one remaining Phase 0 confirmation and it needs a deployed Horde.
 
-> Reusable smoke test: the harness is worth promoting into `HordeServer.Discord.Tests` — it is the
-> cheap version of the §6 "boot the server with the plugin enabled" mitigation and would catch an
-> `INotificationSink` change after an engine upgrade.
+The harness now lives in the repo at **`tools/PluginProbe`** (rescued 2026-07-25 from a session
+scratchpad, where it would have been garbage-collected). Run it after any engine change:
+
+```bash
+dotnet build -c Development
+cp HordeServer.Discord/bin/Development/net10.0/HordeServer.Discord.dll "$HORDE_BIN_DIR/"
+dotnet run --project tools/PluginProbe -c Development        # or pass the server dir as an argument
+```
+
+It resolves the server directory from argv[0], then the `$(HordeBinDir)` baked in at build time, then
+`HORDE_BIN_DIR`, so on a configured machine it takes no arguments. Two things in it are load-bearing
+and easy to break: an `AssemblyLoadContext.Default.Resolving` hook is needed because the probe is not
+the app that owns those assemblies, and it must be installed **before the JIT touches any Horde type**
+— hence the `[MethodImpl(MethodImplOptions.NoInlining)]` split between the top-level statements and
+`Probe.Run`. Inline that and the probe fails to load the engine assemblies.
+
+> Still worth promoting into `HordeServer.Discord.Tests` as an MSTest case — it is the cheap version of
+> the §6 "boot the server with the plugin enabled" mitigation and would catch an `INotificationSink`
+> change after an engine upgrade. The console tool is the interim form, not the destination.
 
 ### Phase 1 — REST client + job/step outcomes
 Minimal REST client (post/edit message, embeds) + rate limiter. Implement `NotifyJobCompleteAsync`,
@@ -436,12 +454,23 @@ alone roughly a third of it. Phases 0–1 are a few days and deliver most of the
 
 | Risk | Mitigation |
 |---|---|
-| `INotificationSink` changes on engine upgrade → stale DLL fails at load | Rebuild the plugin as part of the engine-upgrade checklist; pin the repo to an engine CL in its README; add a smoke test that boots the server with the plugin enabled |
+| `INotificationSink` changes on engine upgrade → stale DLL fails at load | Rebuild the plugin as part of the engine-upgrade checklist; record the engine identity in the README (see below); run `tools/PluginProbe` after any engine change |
 | Plugin DLL not redeployed after a server upgrade | Bake the copy into the Horde deploy step rather than doing it by hand |
 | Bot token in `server.json` | Use the existing Secrets plugin or environment variables; never commit |
 | Discord API drift | Pin the API version in the base URL (`/api/v10`) |
 | Duplicate noise while both sinks run | Route Discord to its own channels initially; only widen once formatting is trusted |
 | No `ServerSettings.md` entry (docs are generated from in-tree config classes) | Document settings in this repo's README |
+
+**Correction (2026-07-25): "pin the repo to an engine CL" is not achievable as originally written.**
+The reference engine is a *source* build — `Engine/Build/Build.version` reports `5.8.0`, `BranchName`
+`UE5`, and **`Changelist: 0`**, so there is no changelist to pin to. The assembly versions do not
+discriminate either: every `HordeServer.*.dll` is stamped `1.0.0.0` and only `EpicGames.Horde.dll`
+carries a real version (`5.8.0.0`). The usable identity is therefore **engine version + binary
+timestamp** (here 5.8.0, binaries built 2026-07-08), and on a CL-stamped build the changelist as well.
+Until a plugin build is verified against a CL-stamped engine, treat "rebuild and re-run
+`tools/PluginProbe`" as the real mitigation and the recorded version as advisory.
+
+Recorded in the README under **Engine compatibility**; update it whenever the reference engine moves.
 
 ---
 

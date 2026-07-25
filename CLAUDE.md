@@ -79,14 +79,24 @@ Output is a single `HordeServer.Discord.dll` (~14 KB at Phase 0). If engine asse
 
 ### Verifying the plugin still loads
 
-There is no automated test yet (`HordeServer.Discord.Tests` is planned). The manual check is to copy
-the DLL into a Horde server app directory and confirm the server logs `Added plugin 'Discord'`.
+There is no automated test yet (`HordeServer.Discord.Tests` is planned). The full check is to copy the
+DLL into a Horde server app directory and confirm the server logs `Added plugin 'Discord'` — but that
+needs MongoDB and Redis.
 
-Booting a real Horde server needs MongoDB and Redis. A lighter check that needs neither: replicate
+**`tools/PluginProbe` is the lighter check that needs neither.** It replicates
 `ServerApp.CreatePluginCollection` — enumerate the app dir for `HordeServer.*.dll`, `Assembly.LoadFrom`
 each, look for `[Plugin]`, then call `PluginCollection.Add`. That last call is the valuable one; it
-validates the generic constraints on the config types. This is worth promoting into a real test — see
-`PLAN.md` §6.
+validates the generic constraints on the config types.
+
+```bash
+dotnet build -c Development
+cp HordeServer.Discord/bin/Development/net10.0/HordeServer.Discord.dll "$HORDE_BIN_DIR/"
+dotnet run --project tools/PluginProbe -c Development
+```
+
+It takes the server directory from argv[0], the build-time `$(HordeBinDir)`, or `HORDE_BIN_DIR`, in
+that order — so on a configured machine it needs no arguments. Run it after any engine change. Note it
+is deliberately **not** named `HordeServer.*`; that pattern is what the server's plugin scan matches.
 
 ## Architecture
 
@@ -142,6 +152,18 @@ rebuild — a stale DLL against a newer server fails at plugin load rather than 
 - **`.claude/PLAN.md`** — the design record: investigation, decisions and their rationale, phasing.
   Update it when a decision changes, and note the reversal rather than silently rewriting history.
 - **`.claude/memory/`** — durable facts that fit neither of the above. See below.
+
+## Skills
+
+Repeating procedures live in `.claude/skills/`, loaded on demand rather than kept in this file:
+
+| Skill | Use it when |
+|---|---|
+| `verify-plugin` | Checking the plugin builds clean and a server would load it. The inner loop. |
+| `notification-type` | Implementing or changing any `INotificationSink` member — the Phase 1–4 workhorse. Carries the verified Discord embed limits and the rule about reading Epic's sink without copying it. |
+| `engine-upgrade` | The engine tree moved, or the plugin fails to load with `TypeLoadException`. |
+
+`verify-plugin` and `engine-upgrade` are user-invocable as `/verify-plugin` and `/engine-upgrade`.
 
 ## Memory
 

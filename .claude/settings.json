@@ -19,6 +19,7 @@
       "Bash(git check-ignore:*)",
       "WebFetch(domain:discord.com)",
       "WebFetch(domain:discord.dev)",
+      "WebFetch(domain:docs.discord.com)",
       "Read(//d/Workspaces/dotBunny/DETHOL/Engine/Source/Programs/Horde/**)"
     ],
     "deny": [

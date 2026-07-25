@@ -1,0 +1,48 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>PluginProbe</RootNamespace>
+    <AssemblyName>PluginProbe</AssemblyName>
+    <!--
+      Deliberately NOT named HordeServer.* - that pattern is what the server's plugin scan matches, and
+      this tool must never be mistaken for a plugin if it is ever copied next to the server binaries.
+    -->
+    <IsPackable>false</IsPackable>
+    <!-- A diagnostic tool with no library surface; nothing here needs XML documentation. -->
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <!--
+    Bake the resolved HordeBinDir in so the probe can be run with no arguments on a machine that has
+    Horde.local.props configured. Overridable at runtime by argv[0] or HORDE_BIN_DIR; never a hardcoded
+    path in source, which would be both machine-specific and wrong to publish.
+  -->
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>HordeBinDir</_Parameter1>
+      <_Parameter2>$(HordeBinDir)</_Parameter2>
+    </AssemblyAttribute>
+  </ItemGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <!--
+    PluginCollection lives in the server assembly itself; the plugin contract types (PluginAttribute,
+    IPluginStartup, PluginServerConfig, IPluginConfig) live in HordeServer.Shared. Private=false as
+    everywhere else - see .claude/PLAN.md section 3.1.
+  -->
+  <ItemGroup>
+    <Reference Include="HordeServer">
+      <HintPath>$(HordeBinDir)\HordeServer.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="HordeServer.Shared">
+      <HintPath>$(HordeBinDir)\HordeServer.Shared.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+</Project>

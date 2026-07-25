@@ -13,4 +13,4 @@ fit neither — discoveries, external constraints, and decisions made in passing
 
 <!-- Add entries as: - [Title](file.md) — one-line hook. -->
 
-_No entries yet — the design record in `.claude/PLAN.md` currently covers everything durable._
+- [Discord API docs & rate limits](discord-api-docs.md) — docs moved to `docs.discord.com`; unversioned API calls silently hit deprecated v6; global cap is 50 req/s, interactions exempt.
