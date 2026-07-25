@@ -1,0 +1,32 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dotnet build:*)",
+      "Bash(dotnet test:*)",
+      "Bash(dotnet restore:*)",
+      "Bash(dotnet clean:*)",
+      "Bash(dotnet sln:*)",
+      "Bash(dotnet format:*)",
+      "Bash(dotnet --version)",
+      "Bash(dotnet --info)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git branch:*)",
+      "Bash(git remote:*)",
+      "Bash(git ls-files:*)",
+      "Bash(git check-ignore:*)",
+      "WebFetch(domain:discord.com)",
+      "WebFetch(domain:discord.dev)",
+      "Read(//d/Workspaces/dotBunny/DETHOL/Engine/Source/Programs/Horde/**)"
+    ],
+    "deny": [
+      "Edit(//d/Workspaces/dotBunny/DETHOL/Engine/**)",
+      "Write(//d/Workspaces/dotBunny/DETHOL/Engine/**)"
+    ],
+    "additionalDirectories": [
+      "D:/Workspaces/dotBunny/DETHOL/Engine/Source/Programs/Horde"
+    ]
+  }
+}

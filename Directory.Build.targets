@@ -1,0 +1,21 @@
+<Project>
+
+  <!--
+    Fail early and readably when the engine path is missing or wrong. Without this the build collapses into
+    a wall of unresolved-type errors that say nothing about the actual cause.
+  -->
+  <!--
+    Must run before ResolveAssemblyReferences, or MSBuild emits a wall of MSB3245 "could not resolve"
+    warnings for every engine reference before this ever gets a chance to explain the real problem.
+  -->
+  <Target Name="ValidateHordeBinDir" BeforeTargets="ResolveAssemblyReferences;BeforeCompile">
+
+    <Error Condition="'$(HordeBinDir)' == ''"
+           Text="HordeBinDir is not set. Copy Horde.local.props.template to Horde.local.props and point HordeBinDir at your built Horde server output (…/Engine/Source/Programs/Horde/HordeServer/bin/Development/net10.0), or set the HORDE_BIN_DIR environment variable." />
+
+    <Error Condition="'$(HordeBinDir)' != '' AND !Exists('$(HordeBinDir)\HordeServer.Build.dll')"
+           Text="HordeBinDir is set to '$(HordeBinDir)' but HordeServer.Build.dll was not found there. Point it at a built Horde server output directory - build the Horde solution first if you have not already." />
+
+  </Target>
+
+</Project>

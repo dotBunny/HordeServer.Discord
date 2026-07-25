@@ -1,0 +1,50 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!--
+      Horde discovers plugins by scanning its application directory for files matching "HordeServer.*.dll",
+      so the assembly name is load-bearing - renaming it makes the plugin invisible to the server.
+    -->
+    <AssemblyName>HordeServer.Discord</AssemblyName>
+  </PropertyGroup>
+
+  <!-- IApplicationBuilder, IServiceCollection, ILogger and friends all come from the shared framework -->
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <!--
+    Engine assemblies, referenced from a built Horde server output rather than by ProjectReference.
+
+    Rationale: the plugin is deployed beside these exact DLLs, so compiling against them is the honest
+    model. Referencing Epic's .csproj files instead would rebuild their entire Horde tree (nuget restore,
+    protobuf codegen, ~15 projects) and write intermediates into the Perforce workspace.
+
+    Private=false keeps them out of our build output - the drop is one file, and .gitignore refuses to
+    commit stray copies. See .claude/PLAN.md sections 3.1 and 3.1a.
+  -->
+  <ItemGroup>
+    <Reference Include="HordeServer.Build">
+      <HintPath>$(HordeBinDir)\HordeServer.Build.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="HordeServer.Shared">
+      <HintPath>$(HordeBinDir)\HordeServer.Shared.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <!-- ILogEventData, surfaced through the job step members of INotificationSink -->
+    <Reference Include="HordeServer.Compute">
+      <HintPath>$(HordeBinDir)\HordeServer.Compute.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="EpicGames.Horde">
+      <HintPath>$(HordeBinDir)\EpicGames.Horde.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="EpicGames.Core">
+      <HintPath>$(HordeBinDir)\EpicGames.Core.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+</Project>

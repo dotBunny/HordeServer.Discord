@@ -1,0 +1,22 @@
+<Project>
+
+  <!--
+    Copy this file to "Horde.local.props" (git-ignored) and set the path below for your machine.
+
+    HordeBinDir must point at a *built* Horde server output directory - the same directory the plugin
+    will eventually be dropped into. It contains HordeServer.Build.dll, HordeServer.Shared.dll,
+    EpicGames.Horde.dll and friends.
+
+    For a UE source engine that is typically:
+      <UE>\Engine\Source\Programs\Horde\HordeServer\bin\Development\net10.0
+
+    Build it first if the directory does not exist yet:
+      dotnet build <UE>\Engine\Source\Programs\Horde\Horde.sln -c Development
+
+    Alternatively set the HORDE_BIN_DIR environment variable and skip this file entirely.
+  -->
+  <PropertyGroup>
+    <HordeBinDir>D:\Workspaces\dotBunny\DETHOL\Engine\Source\Programs\Horde\HordeServer\bin\Development\net10.0</HordeBinDir>
+  </PropertyGroup>
+
+</Project>

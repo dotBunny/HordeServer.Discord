@@ -1,0 +1,38 @@
+<Project>
+
+  <!--
+    Machine-specific engine paths. Copy Horde.local.props.template to Horde.local.props and edit it;
+    that file is git-ignored. HORDE_BIN_DIR is honoured as a fallback for CI or shell-driven builds.
+  -->
+  <Import Project="$(MSBuildThisFileDirectory)Horde.local.props" Condition="Exists('$(MSBuildThisFileDirectory)Horde.local.props')" />
+
+  <PropertyGroup>
+    <HordeBinDir Condition="'$(HordeBinDir)' == ''">$(HORDE_BIN_DIR)</HordeBinDir>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Deterministic>true</Deterministic>
+    <DebugType>portable</DebugType>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <!-- Horde's plugin types live under the HordeServer namespace; match it so our config classes read naturally -->
+    <RootNamespace>HordeServer</RootNamespace>
+  </PropertyGroup>
+
+  <!--
+    Horde builds itself with a 'Development' configuration. Mirroring it here means HordeBinDir can point at
+    the matching engine output without the two trees disagreeing about what "default" means.
+  -->
+  <PropertyGroup>
+    <Configurations>Debug;Development;Release</Configurations>
+    <Configuration Condition="'$(Configuration)' == ''">Development</Configuration>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)' != 'Debug'">
+    <Optimize>true</Optimize>
+  </PropertyGroup>
+
+</Project>

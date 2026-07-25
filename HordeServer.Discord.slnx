@@ -1,0 +1,16 @@
+<Solution>
+
+  <!--
+    Horde builds itself with a 'Development' configuration and HordeBinDir points at that output, so the
+    solution has to offer it too - otherwise `dotnet build -c Development` fails at the solution level
+    even though the project itself is configured for it.
+  -->
+  <Configurations>
+    <BuildType Name="Debug" />
+    <BuildType Name="Development" />
+    <BuildType Name="Release" />
+  </Configurations>
+
+  <Project Path="HordeServer.Discord/HordeServer.Discord.csproj" />
+
+</Solution>
