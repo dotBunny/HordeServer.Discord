@@ -65,12 +65,41 @@ Log excerpts and error lists are unbounded input. Truncate deliberately — take
 append a count of what was dropped, and link to the Horde page for the rest. A truncation that hides
 the fact it truncated is worse than a short message.
 
-## 4. Route it
+## 4. Route it — never resolve a channel yourself
 
-Channel ids are **snowflakes, not names** — there is no `#channel` equivalent. Server config carries
-the channel settings today (`JobNotificationChannel` and friends, `;`-separated for multiples).
-Per-stream and per-template routing arrives in Phase 3 in the hot-reloadable `DiscordConfig`; until
-then do not invent a second routing mechanism.
+**Horde has already decided which channel this belongs in.** Every notification carries a Slack
+channel id, or one is reachable from `BuildConfig`. Your job is to hand that string to
+`DiscordChannelResolver` and post where it says. Do not read `DiscordServerConfig` channel settings
+directly, and do not invent a second routing mechanism — `PLAN.md` §3.3.2 and §3.3.8 explain why.
+
+```csharp
+// A channel carried on the notification
+DiscordDestination? destination = _channels.Resolve(report.Channel);
+
+// One of the base categories, when the notification carries nothing
+IReadOnlyList<DiscordDestination> destinations = _channels.ResolveCategory(DiscordChannelCategory.Agent);
+
+// Job completion, which Horde routes by job then stream, each with an outcome filter
+IReadOnlyList<DiscordDestination> destinations = _channels.ResolveJobCompletion(job, streamConfig, outcome);
+```
+
+Then send through `DiscordNotificationProcessor.SendAsync`, which is the single exit point — it
+applies the configured-or-not gate and the fallback-channel note.
+
+Things the resolver already handles, so you do not have to: the map lookup, the catch-all fallback,
+warn-once on an unmapped channel, deduplicating two Horde channels that point at one Discord channel,
+and rejecting a Slack id pasted into a Discord setting.
+
+Two traps worth knowing:
+
+- **Discord channel ids are snowflakes, not names** — there is no `#channel`. Those go on the *value*
+  side of the map.
+- **Horde is not consistent about its own ids.** `JobNotificationChannel` and
+  `UpdateStreamsNotificationChannel` hold a bare channel *name*; everything else holds a Slack id. The
+  resolver copes, but do not write code that assumes one form.
+
+If a notification needs routing Horde has no opinion about — split by outcome, a role ping, a specific
+guild — that is §3.3.8 territory. Raise it rather than bolting a second mechanism on.
 
 ## 5. Go through the client, never around it
 
@@ -93,6 +122,9 @@ throw still means a silently missing notification.
 
 Run the `verify-plugin` skill. A clean build plus a green probe proves the plugin still loads; it
 proves nothing about the message itself. Say so precisely when reporting.
+
+**Never put an engine type in a `[DataRow]`** — MSTest drops the whole test during discovery and the
+run still reports green. See the gotchas in `CLAUDE.md`.
 
 For the message, the honest check is a real send to a test channel. If no Discord credentials exist
 yet, say the formatting is unverified rather than implying it was tested.

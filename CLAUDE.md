@@ -123,8 +123,14 @@ test assemblies do — harmless because it is never deployed, but never copy it 
   plugin cannot disturb the Slack sink even if it throws. Keep it thin — each member either forwards to
   the processor or logs — and keep members in interface order; both are what make diffing against the
   interface tractable when Epic changes it.
-- **`Notifications/DiscordNotificationProcessor`** — all the formatting and routing. Split out so the
-  sink stays diffable, mirroring how the Experimental plugin splits its Slack sink from its processor.
+- **`Notifications/DiscordNotificationProcessor`** — all the formatting. Split out so the sink stays
+  diffable, mirroring how the Experimental plugin splits its Slack sink from its processor.
+  `SendAsync` is its single exit point; everything goes through it.
+- **`Notifications/DiscordChannelResolver`** — all the routing, and the only place that decides where a
+  message goes. Horde already resolved which channel a notification belongs in and hands us a **Slack
+  channel id**; this translates that to a Discord guild and channel via the map in `DiscordConfig`.
+  Never resolve a channel anywhere else. `DiscordRoutingReport` names unmapped channels at startup.
+  Design and rationale: `PLAN.md` §3.3.2.
 - **`Client/`** — the hand-rolled Discord client. `DiscordRateLimiter` (per-route buckets, global 50/s,
   behind an `IDiscordClock` seam so tests assert decisions rather than sleep), `DiscordClient` (REST,
   `/api/v10` pinned, owns a private `HttpClient`), and the embed/message builders, which enforce
@@ -146,6 +152,11 @@ rebuild — a stale DLL against a newer server fails at plugin load rather than 
   especially where Discord's API forces a departure from what the Slack sink does.
 - Prefer explaining non-obvious constraints in comments over leaving them to be rediscovered. Several
   already-load-bearing ones are noted inline in the csproj and `Directory.Build.targets`.
+- **Read the engine tree with `Read` / `Grep` / `Glob`, not with shell `grep` / `find` / `sed -n`.**
+  Reading Epic's source is the single most common activity in this repo, and the dedicated tools give
+  clickable results, cost fewer tokens, and don't accumulate one-off entries in
+  `.claude/settings.local.json`. `Read` takes `offset`/`limit` for "show me lines 460-500 of the Slack
+  sink", which is the case people reach for `sed -n` to do.
 
 ## Gotchas found the hard way
 

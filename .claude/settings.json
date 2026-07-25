@@ -17,17 +17,20 @@
       "Bash(git remote:*)",
       "Bash(git ls-files:*)",
       "Bash(git check-ignore:*)",
+      "Bash(dotnet run --project tools/PluginProbe:*)",
       "WebFetch(domain:discord.com)",
       "WebFetch(domain:discord.dev)",
       "WebFetch(domain:docs.discord.com)",
-      "Read(//d/Workspaces/dotBunny/DETHOL/Engine/Source/Programs/Horde/**)"
+      "Read(//d/Workspaces/dotBunny/DETHOL/Engine/Source/Programs/**)",
+      "Read(//d/Workspaces/dotBunny/DETHOL/Engine/Build/**)"
     ],
     "deny": [
       "Edit(//d/Workspaces/dotBunny/DETHOL/Engine/**)",
       "Write(//d/Workspaces/dotBunny/DETHOL/Engine/**)"
     ],
     "additionalDirectories": [
-      "D:/Workspaces/dotBunny/DETHOL/Engine/Source/Programs/Horde"
+      "D:/Workspaces/dotBunny/DETHOL/Engine/Source/Programs/Horde",
+      "D:/Workspaces/dotBunny/DETHOL/Engine/Source/Programs/Shared"
     ]
   }
 }
