@@ -120,8 +120,45 @@ The plugin is **disabled by default** and does nothing until `Enabled` is `true`
 
 ## Configuration
 
-All settings live under `Horde:Plugins:Discord` in `server.json`. Changing any of them requires a
-server restart.
+There are two halves. **Channel routing** lives in a hot-reloadable `*.discord.json` config file;
+**credentials and infrastructure** live in `server.json` and need a restart.
+
+### Channel routing
+
+Horde already decides which channel every notification belongs in — per workflow, per stream, per
+template — and it stores that as a **Slack channel id** like `C0832ESJUR5`. Rather than making you
+configure all of that a second time, this plugin translates the last hop: you say where each of those
+channels lands in Discord.
+
+```jsonc
+{
+  "guilds": { "studio": "112233445566778899" },
+  "channels": {
+    "C0832ESJUR5": { "label": "horde-triage", "guild": "studio", "channel": "998877665544332211" },
+    "C085J3A6FHN": { "label": "horde-builds", "channel": "112233445566778899" }
+  },
+  "fallbackChannel": "555566667777888899"
+}
+```
+
+- **Keys** are whatever Horde already has for that channel. That's a Slack channel id for workflow
+  `reportChannel` / `triageChannel`, the issue and device reports, and per-stream and per-template job
+  channels. The two exceptions are `jobNotificationChannel` and `updateStreamsNotificationChannel`,
+  where Horde stores a bare channel **name** — key those on the name, without a `#`.
+- **`label`** is for humans. Nothing routes on it, but both sides of a mapping are opaque ids, so
+  without it the file is unreadable and so are the logs.
+- **`guild`** is optional. With exactly one guild configured, that one is the default. It isn't needed
+  to post at all — it exists for direct messages, interactions and startup validation.
+- **`fallbackChannel`** catches anything unmapped, and the message says which Horde channel it was
+  meant for. Without one, unmapped channels are logged once and dropped.
+
+Add a workflow, or re-point one, and Discord follows automatically — as long as its channel is in the
+map. **At startup and on every config reload the plugin lists every Horde channel with no mapping**, so
+you don't have to discover a gap by noticing a notification that never arrived.
+
+### Server settings
+
+All under `Horde:Plugins:Discord` in `server.json`. Changing any of them requires a server restart.
 
 | Setting | Type | Description |
 |---|---|---|
@@ -130,10 +167,11 @@ server restart.
 | `ApplicationId` | string | Your Discord application (client) id. Needed for slash commands and interactive components. |
 | `GuildId` | string | The Discord server the bot operates in. Only used for member lookup and command registration — posting uses channel ids directly. |
 | `EnableInteractions` | bool | Whether to connect to Discord's gateway for buttons and modals. Posting works without it. Defaults to `true`. |
-| `JobNotificationChannel` | string | Channel for job and step outcomes. Multiple channels may be separated by `;`. **This is the only channel setting that does anything today.** |
-| `AgentNotificationChannel` | string | Channel for agent-related notifications. Not implemented yet. |
-| `ConfigNotificationChannel` | string | Channel for configuration update failures. Not implemented yet. |
-| `UpdateStreamsNotificationChannel` | string | Channel for stream update failures. Not implemented yet. |
+| `JobNotificationChannel` | string | **Override.** Discord channel for job and step outcomes, `;`-separated, bypassing the routing map above. Normally unset. |
+| `AgentNotificationChannel` | string | Override for agent notifications. Not implemented yet. |
+| `ConfigNotificationChannel` | string | Override for configuration update failures. Not implemented yet. |
+| `UpdateStreamsNotificationChannel` | string | Override for stream update failures. Not implemented yet. |
+| `DeviceNotificationChannel` | string | Override for device reports. Not implemented yet. |
 | `ErrorPrefix` | string | Emoji prefixed to error messages. Defaults to `:red_circle:`. |
 | `WarningPrefix` | string | Emoji prefixed to warning messages. Defaults to `:warning:`. |
 
@@ -143,8 +181,8 @@ Discord channels are identified by **numeric id**, not by name — there is no `
 Discord, enable **Settings → Advanced → Developer Mode**, then right-click a channel and choose **Copy
 Channel ID**.
 
-If you copy a `#channel-name` across from your Slack settings, the plugin logs an error naming the
-offending value at startup rather than silently posting nowhere.
+Those ids go on the *right* of a mapping. If you paste a Slack channel id or a `#channel-name` where a
+Discord id belongs, the plugin says so by name at startup rather than silently posting nowhere.
 
 ### Keeping the bot token out of `server.json`
 

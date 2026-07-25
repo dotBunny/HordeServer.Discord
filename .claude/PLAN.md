@@ -106,8 +106,50 @@ views, and the Socket Mode websocket loop — is hand-written against `HttpClien
   copied onto jobs (`Jobs/IJobCollection.cs:64-68`, `JobCollection.cs:116-117`).
 - **Hot-reloadable global config**: the Experimental plugin's `NotificationConfig.cs` — a
   `[JsonSchema]`/`[ConfigIncludeRoot]` document keyed by stream and stream-tag, then by template,
-  with regex step grouping and a `Channels` list. This is the newer, better model and the one to
-  mirror for per-stream Discord routing.
+  with regex step grouping and a `Channels` list. Originally recorded here as "the newer, better model
+  and the one to mirror for per-stream Discord routing"; **not mirrored** — see §1.8 for what it
+  actually covers and §3.3.2 for what we did instead.
+
+**Every one of these resolves to a Slack channel *id*** — `C0832ESJUR5`, not `#horde-builds`. Corrected
+2026-07-25; the original draft of §3.3.2 assumed names. That single fact is what makes the routing
+design in §3.3.2 work at all.
+
+### 1.8 Workflows vs. Experimental's `NotificationConfig` — two domains, not a migration
+
+Worth settling, because it decides whether building on `WorkflowConfig.TriageChannel` is building on
+sand. Investigated 2026-07-25 against this engine snapshot.
+
+**They do not overlap.** `ExperimentalSlackNotificationSink` returns `Task.CompletedTask` from
+*every* issue member — `NotifyIssueUpdatedAsync` and `SendIssueReportAsync` included. The only members
+it implements are the broadcast job/step ones. `NotificationConfig`'s vocabulary agrees: `Template`,
+`NamePattern`, regex step grouping, `Channels`, and nothing about triage, escalation, report times or
+RCA.
+
+**Nothing is deprecated.** No `[Obsolete]` in `WorkflowConfig` at all, and none on
+`StreamConfig.NotificationChannel` or `TemplateRefConfig.NotificationChannel`. (The `[Obsolete]`
+markers in `StreamConfig` concern stream tags and preflight change queries.)
+
+So `NotificationConfig` reads as a **richer replacement for job-notification routing** — which in core
+is one channel plus an outcome filter on a stream or template ref — not as a successor to workflow
+issue channels.
+
+| | Configured in | Signs of movement |
+|---|---|---|
+| Issue triage and reports | `WorkflowConfig` | **None** |
+| Job/step notification routing | `StreamConfig` / `TemplateRefConfig` | Experimental is incubating a richer model |
+
+**Consequences for this plugin:**
+
+- Per-workflow triage and report routing — the thing the channel map in §3.3.2 exists to serve — sits
+  on the side with no sign of change. Safe to build on.
+- Job-notification routing is where churn is plausible. Use it (it is current and non-deprecated), but
+  re-check it on an engine upgrade; the `engine-upgrade` skill says so.
+
+**Caveat on all of the above:** this is inference from one source snapshot, not knowledge of Epic's
+roadmap. The plugin is named "Experimental" and is `EnabledByDefault = false`, so Epic is plainly
+incubating *something* — that does not say where it lands. The investment is real:
+`SlackNotificationProcessor.cs` is 70 KB with a Mongo-backed `JobNotificationCollection` behind it.
+Re-read this section after an engine upgrade rather than trusting it.
 
 ---
 
@@ -224,8 +266,86 @@ non-resumable close codes, and reconnect backoff. Budget for it (§5, Phase 4).
    need a server restart. Put it behind a small `IDiscordUserResolver` so a `/link` slash command can
    be added later as a second provider without redesign. An unmapped user must degrade to plain-text
    name, never to a dropped notification — and should log once at warning, not per message.
-2. **Channels are snowflake IDs, not names.** Slack config accepts `#channel`. Either require IDs in
-   config or resolve names once at startup from the guild channel list and cache.
+2. **Channels are snowflake IDs, not names.** *(Resolved 2026-07-25: a Slack-id → Discord translation
+   table. This supersedes the original text below, which was written on a false premise.)*
+
+   **The premise was wrong.** Horde does not address channels by name — it stores **Slack channel
+   ids**, `C0832ESJUR5`, everywhere it carries one. That changes the answer entirely, and for the
+   better:
+
+   - Slack channel ids are **stable across renames**, so a mapping keyed on one cannot silently rot
+     the way a `#name` key would. This was the only real objection to keying on the Slack value.
+   - Slack ids (`[CGD]` + uppercase base-36) and Discord snowflakes (15–25 digits) are **disjoint
+     formats**, so a value in the wrong place is *detectable* rather than merely broken.
+   - Every destination in Horde already arrives at the sink as one of these strings — see the table
+     below — so the plugin never has to reproduce Horde's routing. It translates the last hop only.
+
+   **Design: a flat map in the hot-reloadable `DiscordConfig`, keyed by Slack channel id.**
+
+   ```jsonc
+   {
+     "guilds": { "studio": "112233445566778899" },
+     "channels": {
+       "C0832ESJUR5": { "label": "horde-triage", "guild": "studio", "channel": "9988…" },
+       "C085J3A6FHN": { "label": "horde-builds", "channel": "1122…" }   // default guild
+     },
+     "fallbackChannel": "5555…"
+   }
+   ```
+
+   `label` is documentation, not data — both sides are opaque ids and nothing else makes the file
+   readable. A single configured guild is the default without naming one.
+
+   Where every channel reaches us:
+
+   | Source | How |
+   |---|---|
+   | `IssueReportGroup.Channel` | passed to `SendIssueReportAsync` |
+   | `IssueReport.TriageChannel` | per report, same call |
+   | `WorkflowConfig.ReportChannel` / `.TriageChannel` | `IOptionsMonitor<BuildConfig>` → `TryGetStream` → `TryGetWorkflow` |
+   | `StreamConfig.TriageChannel`, `TemplateRefConfig.TriageChannel` | the same, as fallbacks |
+   | `DeviceIssueReport.Channel` | on the report |
+   | `BuildServerConfig.*NotificationChannel` | `IOptions<BuildServerConfig>` |
+
+   All three injection points are registered generically — `PluginCollection` calls
+   `AddPluginConfig<TGlobalConfig>` (which registers `IOptionsFactory`/`IOptionsChangeTokenSource`,
+   so `IOptionsMonitor<T>` works and hot-reloads) and `Configure<TServerConfig>` for every plugin.
+   **Consequence: per-workflow triage routing costs nothing extra and is available from Phase 1, not
+   Phase 3.**
+
+   **Unmapped channels go to a configured `fallbackChannel`,** with the message naming the Horde
+   channel it was meant for; without one, they are logged once per distinct channel and dropped.
+   `DiscordRoutingReport` walks `BuildConfig` at startup and on every reload and names every unmapped
+   channel, because a gap in an id-to-id map is otherwise invisible until a notification fails to
+   arrive.
+
+   `DiscordServerConfig.*NotificationChannel` remain as **Discord-native overrides** that win over
+   the translation, so a deployment running Discord without Slack never has to invent Slack ids.
+
+   **Horde is not consistent about ids, though** (found 2026-07-25, after the design was written).
+   Two Build plugin settings hold a bare channel *name*, because the Slack sink prepends the `#`
+   itself — `SlackNotificationSink.cs:411`, `:644`, `:2640`:
+
+   | Setting | Holds |
+   |---|---|
+   | `JobNotificationChannel`, `UpdateStreamsNotificationChannel` | bare channel **name** |
+   | everything else, including all workflow and report channels | Slack channel **id** |
+
+   So a map key is "whatever string Horde carries", usually an id and occasionally a name. Both are
+   accepted; only a key that is plainly the *Discord* side, or one carrying a `#` Horde never stores,
+   is warned about. Being stricter would produce false alarms on the two name-based settings.
+
+   **Job completion routing is separate from the base category.** Horde routes completions through
+   `job.NotificationChannel` then `streamConfig.NotificationChannel`, each with an optional
+   `NotificationChannelFilter` (`|`-separated `LabelOutcome` names), and *not* through
+   `JobNotificationChannel` — that one is for scheduling notices and timed-out steps. Mirrored in
+   `DiscordChannelResolver.ResolveJobCompletion`, with one deliberate departure: when neither is
+   configured we fall back to the Discord-native override, because a fresh install with only that
+   filled in should not be silent. Horde would send nothing.
+
+   > *Original text, retained per the no-silent-rewrites rule:* "Slack config accepts `#channel`.
+   > Either require IDs in config or resolve names once at startup from the guild channel list and
+   > cache."
 3. **Embed limits.** 10 embeds/message, 25 fields/embed, 1024 chars/field value, 6000 chars total,
    2000 chars/message content. The Slack sink builds long log-excerpt blocks
    (`AddLogDataContext`) that will need truncation.
@@ -268,6 +388,33 @@ non-resumable close codes, and reconnect backoff. Budget for it (§5, Phase 4).
    equivalent of Slack's restricted-user problem. The Discord behaviour is simply to **@-mention**
    them in the thread — which is why the user map is required even though DMs are also in scope.
    `SlackAdminToken` and its whole escalation path have no counterpart and should not be ported.
+8. **A bespoke Discord routing document.** *(Considered 2026-07-25, recorded, deliberately not built.)*
+
+   Nothing prevents it. `DiscordConfig` is ours, and the config machinery is available as ordinary
+   API — `[JsonSchema]`, `[JsonSchemaCatalog]`, `[ConfigDoc]`, `[ConfigIncludeRoot]`,
+   `[ConfigMacroScope]` on our own document type, held as a list on the plugin config, exactly the
+   shape Experimental uses. Applying Epic's attributes is API use, not copying (§3.1a). Everything a
+   rule would match on is already on the notification parameters: `IJob.StreamId`, `TemplateId`,
+   `Name`, `INode.Name`, the outcome enums, and for issues the span's `StreamId` plus workflow id.
+
+   **What it would buy** — only things Horde has no opinion about, and therefore nothing to translate:
+   splitting failures and successes across two channels, choosing a guild per rule, thread versus
+   top-level message, a role to ping per stream, and working with **no Slack configuration at all**,
+   which the §3.3.2 table structurally cannot do since it needs a Slack id as its key.
+
+   **Why not now.** Three reasons, in order of weight:
+
+   - It cannot express *per workflow* cleanly. Rules key on stream and template; a workflow is a
+     different axis. For issue triage the channel id **is** the workflow's routing identity, so the
+     table is not merely sufficient, it is the better fit.
+   - It is a second source of truth. Re-point a workflow's `triageChannel` in Horde and Discord would
+     not follow, because a bespoke rule matched first — the precise drift §3.3.2 avoids.
+   - §1.8 suggests Epic is incubating a core job-notification routing model. A bespoke document would
+     most likely overlap with whatever ships.
+
+   **If it is ever built:** precedence must be explicit — bespoke rule → §3.3.2 table → base category
+   → fallback — and `DiscordRoutingReport` should print *which* mechanism resolved each channel.
+   With two overlapping systems, "why did it go there" is the only question that matters.
 
 ### 3.4 What is *not* needed
 
@@ -297,15 +444,19 @@ HordeServer.Discord/                         (this repo)
 │  ├─ DiscordPlugin.cs                    ✅ [Plugin("Discord", EnabledByDefault=false,
 │  │                                          ServerConfigType=…, GlobalConfigType=…)]
 │  ├─ DiscordServerConfig.cs              ✅ : PluginServerConfig — bot token, ids, channel ids
-│  ├─ DiscordConfig.cs                    ✅ : IPluginConfig — user map now; per-stream routing
-│  │                                          in Phase 3, modelled on Experimental's
-│  │                                          NotificationConfig
+│  ├─ DiscordConfig.cs                    ✅ : IPluginConfig — user map, guilds, and the Slack-id
+│  │                                          -> Discord channel map (§3.3.2), validated in PostLoad
+│  ├─ DiscordChannelMapping.cs            ✅ one entry in that map: label, guild, channel
 │  ├─ Notifications/
 │  │  ├─ DiscordNotificationSink.cs       ✅ the 17 INotificationSink members; jobs/steps forward to
 │  │  │                                      the processor, the rest still log-only
 │  │  ├─ DiscordNotificationProcessor.cs  ✅ formatting + routing (the ExperimentalSlack… pattern)
-│  │  ├─ DiscordChannelList.cs            ✅ parses the ';'-separated channel settings, and rejects
-│  │  │                                      '#name' loudly - the likeliest misconfiguration
+│  │  ├─ DiscordChannelResolver.cs        ✅ Slack channel id -> Discord guild+channel (§3.3.2),
+│  │  │                                      with the catch-all fallback and warn-once
+│  │  ├─ DiscordChannelIds.cs             ✅ tells Slack ids and Discord snowflakes apart, which is
+│  │  │                                      what makes a misplaced value detectable
+│  │  ├─ DiscordRoutingReport.cs          ✅ names every unmapped Horde channel at startup and on
+│  │  │                                      each config reload
 │  │  ├─ DiscordMessageStateCollection.cs ▫️ Mongo "DiscordV1", unique (Recipient, EventId),
 │  │  │                                      also stores thread ids (§3.3.6). Deferred to Phase 4,
 │  │  │                                      where the first consumer is - see Phase 1 below
@@ -346,10 +497,13 @@ reading the interface), `EpicGames.Horde`, `EpicGames.Core`, plus
       "ApplicationId": "…",
       "GuildId": "…",                       // single guild
       "EnableInteractions": true,           // gateway on/off, independent of posting
-      "JobNotificationChannel": "…",        // snowflake; ';'-separated like Slack's
+      // Overrides only, normally unset. Routing comes from the Build plugin's own channel settings,
+      // translated through the 'channels' map below. Discord snowflakes, ';'-separated.
+      "JobNotificationChannel": "…",
       "AgentNotificationChannel": "…",
       "ConfigNotificationChannel": "…",
       "UpdateStreamsNotificationChannel": "…",
+      "DeviceNotificationChannel": "…",
       "ErrorEmoji": "<:horde_error:…>",
       "WarningEmoji": "<:horde_warning:…>"
     }
@@ -365,11 +519,21 @@ user map, so onboarding someone or re-pointing a stream doesn't need a server re
   "userMap": {
     "someone@dotbunny.com": "1234567890"    // email → Discord snowflake
   },
-  "notificationStreams": [                  // modelled on Experimental's NotificationConfig
-    { "streams": ["dethol-main"], "jobNotifications": [ /* template → channels */ ] }
-  ]
+  "guilds": { "studio": "112233445566778899" },
+  "channels": {                             // Slack channel id → Discord destination (§3.3.2)
+    "C0832ESJUR5": { "label": "horde-triage", "guild": "studio", "channel": "9988…" },
+    "C085J3A6FHN": { "label": "horde-builds", "channel": "1122…" }
+  },
+  "fallbackChannel": "5555…"                // anything unmapped, so nothing is silently lost
 }
 ```
+
+There is no per-stream routing block. Horde already routes per workflow, stream and template, and
+hands the sink the resulting channel; reproducing that here would be a second, competing source of
+truth.
+
+**Narrower than it first sounds.** This does not close off a bespoke routing document — see §3.3.8. It
+says only that *for the routing Horde itself performs*, there is nothing left for us to model.
 
 Note `GuildId` is only needed for member lookup and slash-command registration — posting uses
 `POST /channels/{id}/messages`, and channel snowflakes are globally unique. Keeping the guild out of
@@ -448,9 +612,12 @@ Built 2026-07-25:
   bare `HttpClient` would hijack the host server's own resolution.
 - `DiscordEmbedBuilder` / `DiscordMessageBuilder` — every limit in §3.3.3 enforced, including the
   combined 6000 that the per-value limits do not imply. Truncation is always marked.
-- `DiscordNotificationProcessor` + the five job/step members, routed from `JobNotificationChannel`.
+- `DiscordNotificationProcessor` + the five job/step members.
+- `DiscordChannelResolver` — the Slack-id → Discord translation from §3.3.2, with the catch-all
+  fallback and warn-once, plus `DiscordRoutingReport` naming unmapped channels at startup. Routing
+  moved out of `DiscordServerConfig` and into the hot-reloadable config as part of this.
 
-**58 tests.** Two real bugs came out of writing them: the overflow-notice reserve was taken *after* the
+**78 tests.** Two real bugs came out of writing them: the overflow-notice reserve was taken *after* the
 description had already spent the budget, and truncation could split a surrogate pair.
 
 > **Deferred: the Mongo message-state collection.** It was listed here for edit-in-place, but nothing
@@ -469,12 +636,17 @@ unexercised.
 `NotifyDeviceServiceAsync`, `SendDeviceIssueReportAsync`, `SendSessionConflictReportAsync`,
 `NotifyTestHealthReportAsync`. All channel-post, no interactivity — mostly formatting work.
 
-### Phase 3 — Users, mentions, DMs, per-stream routing
+### Phase 3 — Users, mentions, DMs
 `IDiscordUserResolver` over the hot-reloadable config map, with `MemoryCache` and warn-once on
 unmapped users. DM channel creation (`POST /users/@me/channels`), @-mention rendering, per-user
 `NotifyJobCompleteAsync(IUser, …)`, `GetDirectMessageLinkAsync` / `GetChannelLinkAsync`.
-Hot-reloadable `DiscordConfig` for per-stream and per-template routing modelled on Experimental's
-`NotificationConfig`.
+
+Also a `roles` table alongside `channels`: Slack's `TriageAlias`, `EscalateAlias` and
+`TriageTypeAliases` are user-group handles, and the Discord equivalent is a role mention
+`<@&roleId>`. Same translation-table shape, same reasoning as §3.3.2.
+
+> **Per-stream routing has left this phase.** §3.3.2 delivered it in Phase 1 as a side effect: Horde
+> resolves the stream's, workflow's or template's channel itself, and the plugin translates the result.
 
 > A bot can only DM users who share a guild with it. Unmapped or un-DMable users must fall back to a
 > channel mention, never silently drop.

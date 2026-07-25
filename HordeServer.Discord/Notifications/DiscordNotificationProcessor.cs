@@ -6,6 +6,7 @@ using EpicGames.Horde.Logs;
 using HordeServer.Discord.Client;
 using HordeServer.Logs;
 using HordeServer.Notifications;
+using HordeServer.Streams;
 using HordeServer.Users;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -54,25 +55,29 @@ namespace HordeServer.Discord.Notifications
 		public const int MaxListedItems = 10;
 
 		readonly DiscordClient _client;
+		readonly DiscordChannelResolver _channels;
 		readonly DiscordServerConfig _serverConfig;
+		readonly IOptionsMonitor<BuildConfig> _buildConfig;
 		readonly IServerInfo _serverInfo;
 		readonly ILogger _logger;
-		readonly IReadOnlyList<string> _jobChannels;
 
 		/// <summary>
 		/// Constructor.
 		/// </summary>
 		/// <param name="client">Client used to post.</param>
-		/// <param name="serverConfig">Server configuration, for channel routing and emoji prefixes.</param>
+		/// <param name="channels">Works out where each notification goes.</param>
+		/// <param name="serverConfig">Server configuration, for the bot token and emoji prefixes.</param>
+		/// <param name="buildConfig">Build plugin global configuration, for per-stream notification channels.</param>
 		/// <param name="serverInfo">Server information, for dashboard links.</param>
 		/// <param name="logger">Logger for delivery problems.</param>
-		public DiscordNotificationProcessor(DiscordClient client, IOptions<DiscordServerConfig> serverConfig, IServerInfo serverInfo, ILogger<DiscordNotificationProcessor> logger)
+		public DiscordNotificationProcessor(DiscordClient client, DiscordChannelResolver channels, IOptions<DiscordServerConfig> serverConfig, IOptionsMonitor<BuildConfig> buildConfig, IServerInfo serverInfo, ILogger<DiscordNotificationProcessor> logger)
 		{
 			_client = client;
+			_channels = channels;
 			_serverConfig = serverConfig.Value;
+			_buildConfig = buildConfig;
 			_serverInfo = serverInfo;
 			_logger = logger;
-			_jobChannels = DiscordChannelList.Parse(_serverConfig.JobNotificationChannel, "JobNotificationChannel", logger);
 		}
 
 		/// <summary>
@@ -81,8 +86,12 @@ namespace HordeServer.Discord.Notifications
 		/// <remarks>
 		/// The plugin registers its sink whether or not it is configured, so this is the real gate. Running it
 		/// unconfigured is a supported way to verify the plugin loads before any Discord credentials exist.
+		///
+		/// Resolved on each call rather than cached, because the channel map is hot-reloadable: adding a mapping
+		/// should start delivery without a server restart.
 		/// </remarks>
-		public bool CanSendJobNotifications => _serverConfig.IsConfigured && _jobChannels.Count > 0;
+		public bool CanSendJobNotifications
+			=> _serverConfig.IsConfigured && _channels.ResolveCategory(DiscordChannelCategory.Job).Count > 0;
 
 		/// <summary>
 		/// Reports that a job finished.
@@ -102,7 +111,13 @@ namespace HordeServer.Discord.Notifications
 			AddJobContext(embed, job);
 			embed.AddField("Outcome", Describe(outcome), true);
 
-			return SendToJobChannelsAsync(embed, Only(forUser), cancellationToken);
+			// Routed by the job and its stream rather than the base category, which is what Horde itself does for
+			// completions - and the only path that honours a per-template or per-stream notification channel.
+			return SendAsync(
+				_channels.ResolveJobCompletion(job, GetStreamConfig(job), outcome),
+				embed,
+				Only(forUser),
+				cancellationToken);
 		}
 
 		/// <summary>
@@ -286,14 +301,52 @@ namespace HordeServer.Discord.Notifications
 
 		static IEnumerable<IUser>? Only(IUser? user) => user == null ? null : new[] { user };
 
-		async Task SendToJobChannelsAsync(DiscordEmbedBuilder embed, IEnumerable<IUser>? forUsers, CancellationToken cancellationToken)
+		Task SendToJobChannelsAsync(DiscordEmbedBuilder embed, IEnumerable<IUser>? forUsers, CancellationToken cancellationToken)
+			=> SendAsync(_channels.ResolveCategory(DiscordChannelCategory.Job), embed, forUsers, cancellationToken);
+
+		/// <summary>
+		/// Finds a job's stream configuration, which carries the stream-level notification channel.
+		/// </summary>
+		/// <remarks>
+		/// Null when the global config has not loaded or the stream has since been removed. Both are survivable -
+		/// routing falls back to the job's own channel - so this reports at debug rather than throwing.
+		/// </remarks>
+		StreamConfig? GetStreamConfig(IJob job)
 		{
-			if (!CanSendJobNotifications)
+			try
+			{
+				if (_buildConfig.CurrentValue.TryGetStream(job.StreamId, out StreamConfig? streamConfig))
+				{
+					return streamConfig;
+				}
+
+				_logger.LogDebug("No stream configuration for {StreamId}; job notifications will use the job's own channel.", job.StreamId);
+			}
+			catch (Exception ex)
+			{
+				_logger.LogDebug(ex, "Build configuration is not available; job notifications will use the job's own channel.");
+			}
+
+			return null;
+		}
+
+		/// <summary>
+		/// Posts an embed to a set of resolved destinations.
+		/// </summary>
+		/// <remarks>
+		/// The single exit point for everything this class sends, which is what keeps the configured-or-not gate and
+		/// the fallback-channel note in one place instead of at every call site.
+		/// </remarks>
+		/// <param name="destinations">Where to post.</param>
+		/// <param name="embed">What to post.</param>
+		/// <param name="forUsers">Users the notification was aimed at, named in plain text.</param>
+		/// <param name="cancellationToken">Cancellation token for the operation.</param>
+		public async Task SendAsync(IReadOnlyList<DiscordDestination> destinations, DiscordEmbedBuilder embed, IEnumerable<IUser>? forUsers, CancellationToken cancellationToken)
+		{
+			if (!_serverConfig.IsConfigured || destinations.Count == 0)
 			{
 				return;
 			}
-
-			DiscordMessageBuilder message = new DiscordMessageBuilder().AddEmbed(embed);
 
 			// Named in plain text rather than mentioned. Until the Phase 3 user map exists there is no snowflake to
 			// mention with, and a notification that arrives addressed to nobody beats one that does not arrive.
@@ -301,16 +354,28 @@ namespace HordeServer.Discord.Notifications
 				? Array.Empty<string>()
 				: [.. forUsers.Select(x => x.Name).Where(x => !String.IsNullOrEmpty(x)).Distinct()];
 
-			if (names.Count > 0)
-			{
-				message.WithContent($"For {String.Join(", ", names.Select(Escape))}");
-			}
+			string? addressee = names.Count > 0 ? $"For {String.Join(", ", names.Select(Escape))}" : null;
 
-			DiscordMessage payload = message.Build();
+			DiscordEmbed built = embed.Build();
 
-			foreach (string channelId in _jobChannels)
+			foreach (DiscordDestination destination in destinations)
 			{
-				await _client.CreateMessageAsync(channelId, payload, cancellationToken);
+				DiscordMessageBuilder message = new DiscordMessageBuilder().AddEmbed(built);
+
+				// A message in the catch-all says which Horde channel it was meant for. Without that the channel
+				// fills up with notifications nobody can trace back to a missing mapping.
+				string? note = destination.IsFallback && destination.SourceChannel != null
+					? $"Unmapped Horde channel `{Escape(destination.SourceChannel)}`"
+					: null;
+
+				string content = String.Join(" · ", new[] { addressee, note }.Where(x => x != null));
+
+				if (content.Length > 0)
+				{
+					message.WithContent(content);
+				}
+
+				await _client.CreateMessageAsync(destination.ChannelId, message.Build(), cancellationToken);
 			}
 		}
 

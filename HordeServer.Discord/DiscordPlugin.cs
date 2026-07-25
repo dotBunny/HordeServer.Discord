@@ -6,6 +6,7 @@ using HordeServer.Notifications;
 using HordeServer.Plugins;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -49,7 +50,14 @@ namespace HordeServer
 				sp.GetRequiredService<DiscordRateLimiter>(),
 				sp.GetRequiredService<ILogger<DiscordClient>>()));
 
+			serviceCollection.AddSingleton<DiscordChannelResolver>();
 			serviceCollection.AddSingleton<DiscordNotificationProcessor>();
+
+			// Names every Horde channel with no Discord mapping, at startup and on every config reload. Both sides
+			// of that map are opaque ids, so a gap in it is otherwise only discovered as a notification that never
+			// turned up.
+			serviceCollection.AddSingleton<DiscordRoutingReport>();
+			serviceCollection.AddSingleton<IHostedService>(sp => sp.GetRequiredService<DiscordRoutingReport>());
 
 			// Registering another INotificationSink is purely additive. NotificationService resolves
 			// IEnumerable<INotificationSink> and fans out with per-sink exception handling, so a fault here

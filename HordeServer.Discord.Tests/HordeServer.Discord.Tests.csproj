@@ -26,6 +26,35 @@
   </ItemGroup>
 
   <!--
+    Restated rather than inherited: a <Reference> does not flow through a <ProjectReference>, so referencing the
+    plugin does not bring the engine assemblies it compiles against. Private=false as everywhere else - at runtime
+    these resolve out of the server directory through PluginProbe.EngineAssemblyResolver, installed by this
+    assembly's module initializer.
+  -->
+  <ItemGroup>
+    <Reference Include="HordeServer.Build">
+      <HintPath>$(HordeBinDir)\HordeServer.Build.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="HordeServer.Shared">
+      <HintPath>$(HordeBinDir)\HordeServer.Shared.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="HordeServer.Compute">
+      <HintPath>$(HordeBinDir)\HordeServer.Compute.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="EpicGames.Horde">
+      <HintPath>$(HordeBinDir)\EpicGames.Horde.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="EpicGames.Core">
+      <HintPath>$(HordeBinDir)\EpicGames.Core.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <!--
     Paths the tests need, baked in at build time rather than hardcoded in source. HordeBinDir is machine-specific
     and must never be committed; the plugin output path follows from the repo layout but still depends on the
     configuration being built.

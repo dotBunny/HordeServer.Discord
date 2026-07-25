@@ -49,24 +49,39 @@ namespace HordeServer
 		/// Channel to send job related notifications to. Multiple channels can be specified, separated by <c>;</c>.
 		/// </summary>
 		/// <remarks>
-		/// Discord channels are identified by snowflake id, not by name - there is no <c>#channel</c> equivalent.
+		/// An **override**, and normally left unset. By default the plugin translates the Build plugin's own
+		/// <c>JobNotificationChannel</c> - a Slack channel id - through the <c>channels</c> map in
+		/// <see cref="DiscordConfig"/>, so routing is configured once in Horde rather than twice. Setting this
+		/// bypasses that, which is what a deployment running Discord without Slack needs.
+		///
+		/// Values here are Discord snowflakes, not Slack channel ids and not <c>#channel</c> names. A Slack id put
+		/// here is detected and reported rather than silently ignored.
 		/// </remarks>
 		public string? JobNotificationChannel { get; set; }
 
 		/// <summary>
-		/// Channel to send agent related notifications to.
+		/// Channel to send agent related notifications to. Overrides the Build plugin's setting; see
+		/// <see cref="JobNotificationChannel"/>.
 		/// </summary>
 		public string? AgentNotificationChannel { get; set; }
 
 		/// <summary>
-		/// Channel to send messages about configuration update failures to.
+		/// Channel to send messages about configuration update failures to. Overrides the Build plugin's setting;
+		/// see <see cref="JobNotificationChannel"/>.
 		/// </summary>
 		public string? ConfigNotificationChannel { get; set; }
 
 		/// <summary>
-		/// Channel to send stream update failures to.
+		/// Channel to send stream update failures to. Overrides the Build plugin's setting; see
+		/// <see cref="JobNotificationChannel"/>.
 		/// </summary>
 		public string? UpdateStreamsNotificationChannel { get; set; }
+
+		/// <summary>
+		/// Channel to send device reports to. Overrides the Build plugin's <c>DeviceReportChannel</c>; see
+		/// <see cref="JobNotificationChannel"/>.
+		/// </summary>
+		public string? DeviceNotificationChannel { get; set; }
 
 		/// <summary>
 		/// Emoji used to prefix error messages. Accepts a unicode emoji or a custom emoji in <c>&lt;:name:id&gt;</c> form.

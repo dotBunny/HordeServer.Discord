@@ -55,6 +55,24 @@ so `dotnet test` tells you immediately whether this step has anything to find. L
   compiler names the missing assembly — add a `<Reference>` with `<Private>false</Private>`.
   Precedent: `ILogEventData` lives in `HordeServer.Compute`, not `HordeServer.Build`.
 
+## 2a. Re-check job notification routing
+
+The other coupling, and the one with no compiler to catch it. The plugin reads Horde's own channel
+settings and translates them (`PLAN.md` §3.3.2), so a change in *what they mean* is silent.
+
+Check these still exist and still hold what we think:
+
+| Setting | We assume |
+|---|---|
+| `WorkflowConfig.ReportChannel` / `.TriageChannel` | Slack channel **id** |
+| `StreamConfig.NotificationChannel` / `TemplateRefConfig.NotificationChannel` (+ `…Filter`) | Slack channel id; filter is `\|`-separated `LabelOutcome` names |
+| `BuildServerConfig.JobNotificationChannel`, `UpdateStreamsNotificationChannel` | bare channel **name** — the Slack sink prepends `#` |
+| Everything else on `BuildServerConfig` | Slack channel id |
+
+**Job notification routing is the part most likely to move.** `PLAN.md` §1.8 records why: Epic's
+Experimental plugin is incubating a richer model for it, while workflow issue channels show no sign of
+change. If `NotificationConfig` graduates into the Build plugin, revisit §1.8 and §3.3.8 together.
+
 Keep members in interface order. That ordering exists precisely to make this diff tractable.
 
 ## 3. Rebuild and verify

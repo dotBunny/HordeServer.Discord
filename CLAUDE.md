@@ -159,6 +159,11 @@ rebuild — a stale DLL against a newer server fails at plugin load rather than 
 - **`field` is a contextual keyword in C# 14.** A loop variable named `field` inside a property
   accessor now binds to the synthesized backing field and fails to compile. Relevant here because
   "field" is the natural name for a Discord embed field.
+- **Never put an engine type in a `[DataRow]`.** MSTest reads attributes during *discovery*, before the
+  test assembly's `[ModuleInitializer]` has installed the engine assembly resolver, so `EpicGames.Horde`
+  cannot load and the whole test method is **silently dropped** — absent from the run, with the summary
+  still green. Pass a `string` or `int` and convert in the test body, which runs after initialization.
+  Caught once already with `LabelOutcome`; a green `dotnet test` will not warn you.
 - **The `HordeBinDir` validation target must run `BeforeTargets="ResolveAssemblyReferences"`.** At
   `BeforeCompile` it fires *after* MSBuild has already emitted MSB3245 warnings for every engine
   reference, burying the actual explanation.
