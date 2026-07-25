@@ -9,8 +9,10 @@
       this tool must never be mistaken for a plugin if it is ever copied next to the server binaries.
     -->
     <IsPackable>false</IsPackable>
-    <!-- A diagnostic tool with no library surface; nothing here needs XML documentation. -->
-    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <!--
+      Documentation stays on despite this being a tool: HordeServer.Discord.Tests references it, so the probe
+      types are a real library surface that someone reading a red test will end up in.
+    -->
   </PropertyGroup>
 
   <!--
@@ -41,6 +43,11 @@
     </Reference>
     <Reference Include="HordeServer.Shared">
       <HintPath>$(HordeBinDir)\HordeServer.Shared.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <!-- INotificationSink, so the probe can check the sink still satisfies it member for member. -->
+    <Reference Include="HordeServer.Build">
+      <HintPath>$(HordeBinDir)\HordeServer.Build.dll</HintPath>
       <Private>false</Private>
     </Reference>
   </ItemGroup>

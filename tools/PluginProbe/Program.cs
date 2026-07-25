@@ -1,26 +1,22 @@
 // Copyright (c) 2026 dotBunny Inc. See the LICENSE file in the project root for more information.
 
-// Phase 0 verification harness. Replicates HordeServer/ServerApp.cs CreatePluginCollection so the
-// plugin's discoverability can be checked without standing up Mongo/Redis and booting the real server.
-//
-// Run it against a built Horde server output that already has HordeServer.Discord.dll copied in:
+// Human-facing front end for the plugin load probe. HordeServer.Discord.Tests runs the same Probe.Run over the
+// same server directory and asserts on the result; this prints it, which is what you want when an engine upgrade
+// has broken something and a red test is not enough to tell you what.
 //
 //     dotnet run --project tools/PluginProbe -- "<horde-bin-dir>"
 //
-// With no argument it falls back to the HordeBinDir baked in at build time, then to HORDE_BIN_DIR -
-// the same resolution order Directory.Build.props uses, so on a configured machine it just works.
+// With no argument it falls back to the HordeBinDir baked in at build time, then to HORDE_BIN_DIR - the same
+// resolution order Directory.Build.props uses, so on a configured machine it just works.
 
 using System.Reflection;
-using System.Runtime.CompilerServices;
-using System.Runtime.Loader;
-using Microsoft.Extensions.Configuration;
+using PluginProbe;
 
-string? appDir = args.Length > 0 ? args[0] : (BuildTimeHordeBinDir() ?? Environment.GetEnvironmentVariable("HORDE_BIN_DIR"));
+string? appDir = HordeBinDirLocator.Resolve(typeof(Probe).Assembly, args.Length > 0 ? args[0] : null);
 
-if (String.IsNullOrWhiteSpace(appDir))
+if (appDir == null)
 {
-	Console.Error.WriteLine("No Horde server directory to scan.");
-	Console.Error.WriteLine("Pass one as the first argument, set HORDE_BIN_DIR, or create Horde.local.props (see Horde.local.props.template).");
+	Console.Error.WriteLine(HordeBinDirLocator.NotFoundMessage);
 	return 2;
 }
 
@@ -30,163 +26,97 @@ if (!Directory.Exists(appDir))
 	return 2;
 }
 
-// Resolve engine assemblies out of the app dir. The real server gets this for free because it *is* the
-// app; here we have to opt in before any Horde type is touched - hence the NoInlining split below.
-AssemblyLoadContext.Default.Resolving += (ctx, name) =>
+// Resolve engine assemblies out of the app dir before anything touches a Horde type. See EngineAssemblyResolver
+// for why this cannot be folded into the call below.
+EngineAssemblyResolver.Install(appDir);
+
+return Report.Render(Probe.Run(appDir));
+
+static class Report
 {
-	string candidate = Path.Combine(appDir, name.Name + ".dll");
-	return File.Exists(candidate) ? ctx.LoadFromAssemblyPath(candidate) : null;
-};
-
-return Probe.Run(appDir);
-
-// The path baked in by the csproj from $(HordeBinDir), so a developer with Horde.local.props configured
-// can run the probe with no arguments. Reading our own metadata touches no Horde type, so it is safe to
-// do before the resolver above is installed.
-static string? BuildTimeHordeBinDir()
-{
-	string? value = typeof(Probe).Assembly
-		.GetCustomAttributes<AssemblyMetadataAttribute>()
-		.FirstOrDefault(x => x.Key == "HordeBinDir")?.Value;
-
-	return String.IsNullOrWhiteSpace(value) ? null : value;
-}
-
-static class Probe
-{
-	// Must not be inlined into the top-level statements: the JIT resolves a method's referenced types
-	// when it compiles the method, so any Horde type mentioned here would be resolved before the
-	// AssemblyLoadContext handler above is attached, and the load would fail.
-	[MethodImpl(MethodImplOptions.NoInlining)]
-	public static int Run(string appDir)
+	public static int Render(ProbeResult result)
 	{
-		Console.WriteLine($"Scanning: {appDir}");
+		Console.WriteLine($"Scanning: {result.AppDir}");
 		Console.WriteLine();
 
-		// --- Step 1+2: enumerate AppDir for HordeServer.*.dll, exactly as ServerApp does ---------------
-		const string Prefix = "HordeServer.";
-		const string Suffix = ".dll";
+		Console.WriteLine($"Matched {result.CandidateFiles.Count} candidate assemblies by filename pattern.");
+		Console.WriteLine(result.PluginFileFound
+			? $"  [PASS] {Probe.PluginFileName} matches the scan pattern."
+			: $"  [FAIL] {Probe.PluginFileName} was NOT found in the scan set.");
+		Console.WriteLine();
 
-		List<FileInfo> candidates = new();
-		foreach (FileInfo fileInfo in new DirectoryInfo(appDir).EnumerateFiles())
+		foreach (DiscoveredPlugin plugin in result.Plugins)
 		{
-			if (fileInfo.Name.StartsWith(Prefix, StringComparison.OrdinalIgnoreCase)
-				&& fileInfo.Name.EndsWith(Suffix, StringComparison.OrdinalIgnoreCase)
-				&& fileInfo.Name.Length > Prefix.Length + Suffix.Length)
-			{
-				candidates.Add(fileInfo);
-			}
+			string flag = plugin.EnabledByDefault ? "default-on" : "default-off";
+			Console.WriteLine($"  found plugin '{plugin.Name}' ({flag}) in {plugin.AssemblyFileName}");
 		}
 
-		Console.WriteLine($"Matched {candidates.Count} candidate assemblies by filename pattern.");
-
-		bool discordFileFound = candidates.Any(x => x.Name.Equals("HordeServer.Discord.dll", StringComparison.OrdinalIgnoreCase));
-		Console.WriteLine(discordFileFound
-			? "  [PASS] HordeServer.Discord.dll matches the scan pattern."
-			: "  [FAIL] HordeServer.Discord.dll was NOT found in the scan set.");
-		Console.WriteLine();
-
-		// --- Step 3: load each and look for [Plugin] ---------------------------------------------------
-		HordeServer.Plugins.PluginCollection collection = new();
-		Type? discordStartupType = null;
-		int discovered = 0;
-
-		foreach (FileInfo file in candidates)
+		foreach (string warning in result.Warnings)
 		{
-			try
-			{
-				Assembly assembly = Assembly.LoadFrom(file.FullName);
-				foreach (Type type in assembly.GetExportedTypes())
-				{
-					HordeServer.Plugins.PluginAttribute? attr = type.GetCustomAttribute<HordeServer.Plugins.PluginAttribute>();
-					if (attr != null)
-					{
-						discovered++;
-						string flag = attr.EnabledByDefault ? "default-on" : "default-off";
-						Console.WriteLine($"  found plugin '{attr.Name}' ({flag}) in {file.Name}");
-						if (attr.Name.Equals("Discord", StringComparison.OrdinalIgnoreCase))
-						{
-							discordStartupType = type;
-						}
-					}
-				}
-			}
-			catch (Exception ex)
-			{
-				Console.WriteLine($"  [WARN] {file.Name}: {ex.GetType().Name}: {ex.Message}");
-			}
+			Console.WriteLine($"  [WARN] {warning}");
 		}
 
 		Console.WriteLine();
-		Console.WriteLine($"Discovered {discovered} plugins total.");
+		Console.WriteLine($"Discovered {result.Plugins.Count} plugins total.");
 		Console.WriteLine();
 
-		if (discordStartupType == null)
+		if (result.StartupTypeName == null)
 		{
-			Console.WriteLine("  [FAIL] No [Plugin(\"Discord\")] type was discovered.");
+			Console.WriteLine($"  [FAIL] No [Plugin(\"{Probe.PluginName}\")] type was discovered.");
 			return 1;
 		}
 
-		Console.WriteLine($"  [PASS] Discord plugin type: {discordStartupType.FullName}");
-
-		HordeServer.Plugins.PluginAttribute discordAttr = discordStartupType.GetCustomAttribute<HordeServer.Plugins.PluginAttribute>()!;
-		Console.WriteLine($"         ServerConfigType = {discordAttr.ServerConfigType?.Name ?? "<null>"}");
-		Console.WriteLine($"         GlobalConfigType = {discordAttr.GlobalConfigType?.Name ?? "<null>"}");
-		Console.WriteLine($"         implements IPluginStartup = {typeof(HordeServer.Plugins.IPluginStartup).IsAssignableFrom(discordStartupType)}");
+		Console.WriteLine($"  [PASS] Discord plugin type: {result.StartupTypeName}");
+		Console.WriteLine($"         ServerConfigType = {result.AttributeServerConfigTypeName ?? "<null>"}");
+		Console.WriteLine($"         GlobalConfigType = {result.AttributeGlobalConfigTypeName ?? "<null>"}");
+		Console.WriteLine($"         implements IPluginStartup = {result.ImplementsPluginStartup}");
 		Console.WriteLine();
 
-		// --- Step 4: let Horde's own PluginCollection construct it -------------------------------------
-		// Validates the generic constraints on the config types - this throws if ServerConfigType does not
-		// derive from PluginServerConfig, or GlobalConfigType does not implement IPluginConfig.
-		try
+		if (!result.AddSucceeded)
 		{
-			HordeServer.Plugins.ILoadedPlugin loaded = collection.Add(discordStartupType);
-			Console.WriteLine($"  [PASS] PluginCollection.Add succeeded - name '{loaded.Name}'");
-			Console.WriteLine($"         ServerConfigType = {loaded.ServerConfigType.Name}");
-			Console.WriteLine($"         GlobalConfigType = {loaded.GlobalConfigType.Name}");
-		}
-		catch (Exception ex)
-		{
-			Console.WriteLine($"  [FAIL] PluginCollection.Add threw: {ex.GetType().Name}: {ex.Message}");
+			Console.WriteLine($"  [FAIL] PluginCollection.Add threw: {result.AddError}");
 			return 1;
 		}
+
+		Console.WriteLine($"  [PASS] PluginCollection.Add succeeded - name '{result.LoadedPluginName}'");
+		Console.WriteLine($"         ServerConfigType = {result.LoadedServerConfigTypeName}");
+		Console.WriteLine($"         GlobalConfigType = {result.LoadedGlobalConfigTypeName}");
 		Console.WriteLine();
-
-		// --- Step 5: prove server config binds from the Horde:Plugins:Discord section ------------------
-		IConfiguration config = new ConfigurationBuilder()
-			.AddInMemoryCollection(new Dictionary<string, string?>
-			{
-				["Horde:Plugins:Discord:Enabled"] = "true",
-				["Horde:Plugins:Discord:BotToken"] = "test-token",
-				["Horde:Plugins:Discord:GuildId"] = "123456789",
-				["Horde:Plugins:Discord:JobNotificationChannel"] = "987654321",
-				["Horde:Plugins:Discord:EnableInteractions"] = "false",
-			})
-			.Build();
-
-		object serverConfig = Activator.CreateInstance(discordAttr.ServerConfigType!)!;
-		config.GetSection("Horde").GetSection("Plugins").GetSection("Discord").Bind(serverConfig);
 
 		Console.WriteLine("  Bound server config:");
-		foreach (string name in new[] { "Enabled", "BotToken", "GuildId", "JobNotificationChannel", "EnableInteractions", "IsConfigured" })
+		foreach ((string name, string value) in result.BoundServerConfig)
 		{
-			PropertyInfo? prop = discordAttr.ServerConfigType!.GetProperty(name);
-			Console.WriteLine($"         {name,-24} = {prop?.GetValue(serverConfig) ?? "<null>"}");
+			Console.WriteLine($"         {name,-24} = {value}");
 		}
 
-		// Mirror ServerApp's enablement decision: config wins, attribute default is the fallback.
-		Dictionary<string, HordeServer.Plugins.PluginServerConfig> pluginConfigs = new(StringComparer.OrdinalIgnoreCase);
-		config.GetSection("Horde").GetSection("Plugins").Bind(pluginConfigs);
-		bool? enabled = pluginConfigs.TryGetValue("Discord", out HordeServer.Plugins.PluginServerConfig? pc) ? pc.Enabled : null;
-		bool wouldLoad = enabled ?? discordAttr.EnabledByDefault;
-
 		Console.WriteLine();
-		Console.WriteLine(wouldLoad
+		Console.WriteLine(result.WouldLoad
 			? "  [PASS] With Enabled=true in server.json, Horde would load this plugin."
 			: "  [FAIL] Horde would NOT load this plugin.");
+		Console.WriteLine();
+
+		SinkContract? sink = result.Sink;
+		if (sink?.TypeName == null)
+		{
+			Console.WriteLine("  [FAIL] No INotificationSink implementation was found in the plugin assembly.");
+		}
+		else if (sink.MethodsLeftToDefaultImplementation.Count > 0)
+		{
+			Console.WriteLine($"  [FAIL] {sink.TypeName} leaves {sink.MethodsLeftToDefaultImplementation.Count} of "
+				+ $"{sink.InterfaceMethodCount} INotificationSink members to a default implementation:");
+			foreach (string method in sink.MethodsLeftToDefaultImplementation)
+			{
+				Console.WriteLine($"         {method}");
+			}
+			Console.WriteLine("         Epic added interface members. Run the engine-upgrade skill.");
+		}
+		else
+		{
+			Console.WriteLine($"  [PASS] {sink.TypeName} implements all {sink.InterfaceMethodCount} INotificationSink members.");
+		}
 
 		Console.WriteLine();
-		Console.WriteLine("Phase 0 verification complete.");
-		return 0;
+		Console.WriteLine(result.Success ? "Plugin load verification complete." : "Plugin load verification FAILED.");
+		return result.Success ? 0 : 1;
 	}
 }

@@ -1,0 +1,44 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>HordeServer.Discord.Tests</RootNamespace>
+    <!--
+      This assembly matches the server's HordeServer.*.dll plugin scan pattern, exactly as Epic's own test
+      assemblies do. It is never deployed, so that is harmless - but never copy it next to the server binaries,
+      because the scan would pick it up and try to load it as a plugin.
+    -->
+    <AssemblyName>HordeServer.Discord.Tests</AssemblyName>
+  </PropertyGroup>
+
+  <!--
+    A normal reference, so unit tests can exercise the plugin's own types directly. That puts a second copy of
+    HordeServer.Discord.dll in this project's output, which is why the load probe loads the deployed file through
+    an isolated AssemblyLoadContext rather than Assembly.LoadFrom - otherwise identity-based resolution would hand
+    it this copy and the load tests would verify a build that was never deployed. See PluginProbe.PluginLoadContext.
+  -->
+  <ItemGroup>
+    <ProjectReference Include="..\HordeServer.Discord\HordeServer.Discord.csproj" />
+    <ProjectReference Include="..\tools\PluginProbe\PluginProbe.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <!--
+    Paths the tests need, baked in at build time rather than hardcoded in source. HordeBinDir is machine-specific
+    and must never be committed; the plugin output path follows from the repo layout but still depends on the
+    configuration being built.
+  -->
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>HordeBinDir</_Parameter1>
+      <_Parameter2>$(HordeBinDir)</_Parameter2>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>PluginOutputPath</_Parameter1>
+      <_Parameter2>$(MSBuildThisFileDirectory)..\HordeServer.Discord\bin\$(Configuration)\$(TargetFramework)\HordeServer.Discord.dll</_Parameter2>
+    </AssemblyAttribute>
+  </ItemGroup>
+
+</Project>

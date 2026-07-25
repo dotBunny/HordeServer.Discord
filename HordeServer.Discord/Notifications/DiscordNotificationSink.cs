@@ -22,38 +22,46 @@ namespace HordeServer.Discord.Notifications
 	/// Sends Horde notifications to Discord.
 	/// </summary>
 	/// <remarks>
-	/// Phase 0 skeleton: every member is a no-op that records the callback, which is enough to prove the plugin is
-	/// discovered, its configuration binds, and the notification service is routing events to it. Real delivery
-	/// arrives in Phase 1 - see <c>.claude/PLAN.md</c>.
+	/// Deliberately thin. Every member either forwards to <see cref="DiscordNotificationProcessor"/> or logs that
+	/// its phase has not landed yet, so this file stays a readable list of the interface's members - which is what
+	/// makes it tractable to diff against <see cref="INotificationSink"/> after an engine upgrade. Keep members in
+	/// interface order for the same reason.
 	///
-	/// Members are grouped to match <see cref="INotificationSink"/>. Keep them in that order; it makes diffing
-	/// against the interface tractable as Epic adds to it.
+	/// As of Phase 1 the job and step members deliver; issues, farm operations and links do not. See
+	/// <c>.claude/PLAN.md</c> section 5 for the phase breakdown.
 	/// </remarks>
 	public sealed class DiscordNotificationSink : INotificationSink
 	{
+		readonly DiscordNotificationProcessor _processor;
 		readonly DiscordServerConfig _serverConfig;
 		readonly ILogger<DiscordNotificationSink> _logger;
 
 		/// <summary>
 		/// Constructor.
 		/// </summary>
+		/// <param name="processor">Turns notifications into Discord messages.</param>
 		/// <param name="serverConfig">Server configuration for the Discord plugin.</param>
 		/// <param name="logger">Logger for output.</param>
-		public DiscordNotificationSink(IOptions<DiscordServerConfig> serverConfig, ILogger<DiscordNotificationSink> logger)
+		public DiscordNotificationSink(DiscordNotificationProcessor processor, IOptions<DiscordServerConfig> serverConfig, ILogger<DiscordNotificationSink> logger)
 		{
+			_processor = processor;
 			_serverConfig = serverConfig.Value;
 			_logger = logger;
 
-			// Logged at information because it is the signal that Phase 0 wiring works end to end. Once delivery
-			// exists this should drop to debug, or move behind the client's own connection logging.
-			if (_serverConfig.IsConfigured)
+			// Logged at information on purpose: "the plugin loaded but is not going to send anything" is the single
+			// most likely thing to be wrong, and it is invisible unless startup says so.
+			if (!_serverConfig.IsConfigured)
 			{
-				_logger.LogInformation("Discord notification sink registered (guild {GuildId}, interactions {Interactions})",
-					_serverConfig.GuildId ?? "<unset>", _serverConfig.EnableInteractions ? "enabled" : "disabled");
+				_logger.LogInformation("Discord notification sink registered but no bot token is configured; notifications will be discarded");
+			}
+			else if (!_processor.CanSendJobNotifications)
+			{
+				_logger.LogWarning("Discord notification sink registered with a bot token but no usable JobNotificationChannel; job notifications will be discarded");
 			}
 			else
 			{
-				_logger.LogInformation("Discord notification sink registered but no bot token is configured; notifications will be discarded");
+				_logger.LogInformation("Discord notification sink registered (guild {GuildId}, interactions {Interactions})",
+					_serverConfig.GuildId ?? "<unset>", _serverConfig.EnableInteractions ? "enabled" : "disabled");
 			}
 		}
 
@@ -61,45 +69,28 @@ namespace HordeServer.Discord.Notifications
 
 		/// <inheritdoc/>
 		public Task NotifyJobScheduledAsync(List<JobScheduledNotification> notifications, CancellationToken cancellationToken)
-		{
-			_logger.LogDebug("[Discord] JobScheduled ({Count} notifications)", notifications.Count);
-			return Task.CompletedTask;
-		}
+			=> _processor.NotifyJobScheduledAsync(notifications, cancellationToken);
 
 		/// <inheritdoc/>
 		public Task NotifyJobCompleteAsync(IJob job, IGraph graph, LabelOutcome outcome, CancellationToken cancellationToken)
-		{
-			_logger.LogDebug("[Discord] JobComplete {JobId} ({Outcome})", job.Id, outcome);
-			return Task.CompletedTask;
-		}
+			=> _processor.NotifyJobCompleteAsync(job, outcome, null, cancellationToken);
 
 		/// <inheritdoc/>
+		/// <remarks>Posted to the job channel naming the user until Phase 3 can DM them.</remarks>
 		public Task NotifyJobCompleteAsync(IUser user, IJob job, IGraph graph, LabelOutcome outcome, CancellationToken cancellationToken)
-		{
-			_logger.LogDebug("[Discord] JobComplete {JobId} ({Outcome}) for user {UserId}", job.Id, outcome, user.Id);
-			return Task.CompletedTask;
-		}
+			=> _processor.NotifyJobCompleteAsync(job, outcome, user, cancellationToken);
 
 		/// <inheritdoc/>
 		public Task NotifyJobStepAbortedAsync(IEnumerable<IUser>? usersToNotify, IJob job, IJobStepBatch batch, IJobStep step, INode node, List<ILogEventData> jobStepEventData, CancellationToken cancellationToken)
-		{
-			_logger.LogDebug("[Discord] JobStepAborted {JobId}:{StepId}", job.Id, step.Id);
-			return Task.CompletedTask;
-		}
+			=> _processor.NotifyJobStepAbortedAsync(job, step, node, jobStepEventData, usersToNotify, cancellationToken);
 
 		/// <inheritdoc/>
 		public Task NotifyJobStepCompleteAsync(IEnumerable<IUser>? usersToNotify, IJob job, IJobStepBatch batch, IJobStep step, INode node, List<ILogEventData> jobStepEventData, CancellationToken cancellationToken)
-		{
-			_logger.LogDebug("[Discord] JobStepComplete {JobId}:{StepId}", job.Id, step.Id);
-			return Task.CompletedTask;
-		}
+			=> _processor.NotifyJobStepCompleteAsync(job, step, node, jobStepEventData, usersToNotify, cancellationToken);
 
 		/// <inheritdoc/>
 		public Task NotifyLabelCompleteAsync(IUser user, IJob job, ILabel label, int labelIdx, LabelOutcome outcome, List<(string, JobStepOutcome, Uri)> stepData, CancellationToken cancellationToken)
-		{
-			_logger.LogDebug("[Discord] LabelComplete {JobId} label {LabelIdx} ({Outcome})", job.Id, labelIdx, outcome);
-			return Task.CompletedTask;
-		}
+			=> _processor.NotifyLabelCompleteAsync(job, label, outcome, stepData, user, cancellationToken);
 
 		#endregion
 

@@ -1,6 +1,8 @@
 # Horde → Discord Notification Plugin — Investigation & Plan
 
-> **Status:** design settled, no code written yet. Next action is Phase 0 (§5).
+> **Status:** Phase 0 and Phase 1 built (2026-07-25). Nothing has been sent to a real Discord server
+> yet — no application, bot token or guild exists — so message formatting is unverified. Next action
+> is Phase 2 (§5), or standing up a Discord application to verify Phase 1 end to end.
 > **Written:** 2026-07-25, against the DETHOL source engine (UE 5.8).
 > All line references below point into `Engine/Source/Programs/Horde` in that engine — re-verify them
 > after an engine upgrade, since none of it is a stable public API.
@@ -299,21 +301,32 @@ HordeServer.Discord/                         (this repo)
 │  │                                          in Phase 3, modelled on Experimental's
 │  │                                          NotificationConfig
 │  ├─ Notifications/
-│  │  ├─ DiscordNotificationSink.cs       ✅ the 17 INotificationSink members (no-ops in Phase 0)
-│  │  ├─ DiscordNotificationProcessor.cs  ▫️ formatting + routing (the ExperimentalSlack… pattern)
+│  │  ├─ DiscordNotificationSink.cs       ✅ the 17 INotificationSink members; jobs/steps forward to
+│  │  │                                      the processor, the rest still log-only
+│  │  ├─ DiscordNotificationProcessor.cs  ✅ formatting + routing (the ExperimentalSlack… pattern)
+│  │  ├─ DiscordChannelList.cs            ✅ parses the ';'-separated channel settings, and rejects
+│  │  │                                      '#name' loudly - the likeliest misconfiguration
 │  │  ├─ DiscordMessageStateCollection.cs ▫️ Mongo "DiscordV1", unique (Recipient, EventId),
-│  │  │                                      also stores thread ids (§3.3.6)
+│  │  │                                      also stores thread ids (§3.3.6). Deferred to Phase 4,
+│  │  │                                      where the first consumer is - see Phase 1 below
 │  │  └─ DiscordUserResolver.cs           ▫️ IDiscordUserResolver over the config map, MemoryCache,
 │  │                                         warn-once on unmapped users
 │  └─ Client/                                the hand-rolled client (mirrors EpicGames.Slack)
-│     ├─ DiscordClient.cs                 ▫️ REST: messages, edits, threads, DM channels, members
-│     ├─ DiscordRateLimiter.cs            ▫️ per-route buckets + global
+│     ├─ DiscordClient.cs                 ✅ REST: create/edit message. Threads, DM channels and
+│     │                                      members arrive with the phases that need them
+│     ├─ DiscordRateLimiter.cs            ✅ per-route buckets + global, over an IDiscordClock seam
+│     ├─ DiscordEmbed*.cs / Message*.cs   ✅ builders, with every limit in §3.3.3 enforced
+│     ├─ DiscordMarkdown.cs               ✅ escaping for text that came from a build log
 │     ├─ DiscordGateway.cs                ▫️ ClientWebSocket: identify/heartbeat/resume/dispatch
-│     ├─ DiscordEmbed.cs / Components.cs  ▫️ builders
+│     ├─ Components.cs                    ▫️ action rows, buttons, modals
 │     └─ DiscordInteractionHandler.cs     ▫️ buttons + modal → IssueService verbs
-├─ tools/PluginProbe/                     ✅ Phase 0 verification harness - replicates
-│                                            ServerApp.CreatePluginCollection without Mongo/Redis
-└─ HordeServer.Discord.Tests/             ▫️ MSTest, mirroring HordeServer.Experimental.Tests
+├─ tools/PluginProbe/                     ✅ the load probe - replicates
+│                                            ServerApp.CreatePluginCollection without Mongo/Redis.
+│                                            Now a shared library with a console front end; the
+│                                            tests run the same Probe.Run and assert on its result
+└─ HordeServer.Discord.Tests/             ✅ MSTest, mirroring HordeServer.Experimental.Tests.
+                                             Deploys the plugin into $(HordeBinDir) itself, then
+                                             probes - no copy step to forget
 ```
 
 **Reference set** (discovered by building): `HordeServer.Build`, `HordeServer.Shared`,
@@ -386,31 +399,70 @@ run against the real server output directory with the plugin DLL dropped in:
 Not yet done: booting the real server (needs Mongo + Redis) to watch the sink receive live callbacks.
 That is the one remaining Phase 0 confirmation and it needs a deployed Horde.
 
-The harness now lives in the repo at **`tools/PluginProbe`** (rescued 2026-07-25 from a session
-scratchpad, where it would have been garbage-collected). Run it after any engine change:
+The harness lives in the repo at **`tools/PluginProbe`** (rescued 2026-07-25 from a session scratchpad,
+where it would have been garbage-collected). It was **promoted into `HordeServer.Discord.Tests` the
+same day**, which is now the gate:
 
 ```bash
-dotnet build -c Development
-cp HordeServer.Discord/bin/Development/net10.0/HordeServer.Discord.dll "$HORDE_BIN_DIR/"
-dotnet run --project tools/PluginProbe -c Development        # or pass the server dir as an argument
+dotnet test -c Development
 ```
 
-It resolves the server directory from argv[0], then the `$(HordeBinDir)` baked in at build time, then
-`HORDE_BIN_DIR`, so on a configured machine it takes no arguments. Two things in it are load-bearing
-and easy to break: an `AssemblyLoadContext.Default.Resolving` hook is needed because the probe is not
-the app that owns those assemblies, and it must be installed **before the JIT touches any Horde type**
-— hence the `[MethodImpl(MethodImplOptions.NoInlining)]` split between the top-level statements and
-`Probe.Run`. Inline that and the probe fails to load the engine assemblies.
+The probe is the shared implementation; the console tool is its human-facing renderer, kept because a
+step-by-step report beats a single failed assertion when an engine upgrade breaks something. The test
+project deploys the plugin into `$(HordeBinDir)` itself, so the copy step that used to be the most
+common source of misleading results is gone.
 
-> Still worth promoting into `HordeServer.Discord.Tests` as an MSTest case — it is the cheap version of
-> the §6 "boot the server with the plugin enabled" mitigation and would catch an `INotificationSink`
-> change after an engine upgrade. The console tool is the interim form, not the destination.
+Two things in the probe are load-bearing and easy to break: an `AssemblyLoadContext.Default.Resolving`
+hook is needed because neither the probe nor the test host is the app that owns those assemblies, and
+it must be installed **before the JIT touches any Horde type**. The console tool does that with a
+`[MethodImpl(MethodImplOptions.NoInlining)]` split; the test assembly does it with a
+`[ModuleInitializer]`, because MSTest reflects over test classes long before it would run an
+`[AssemblyInitialize]`. Get either wrong and the engine assemblies fail to load.
 
-### Phase 1 — REST client + job/step outcomes
+The test project deliberately references the plugin with `ReferenceOutputAssembly="false"`. A normal
+reference would put a second copy of `HordeServer.Discord.dll` in the test output, and since the
+default load context resolves by assembly identity, `Assembly.LoadFrom` would hand back *that* copy —
+so the tests would pass against a build that was never deployed.
+
+Beyond the original Phase 0 checks, the suite adds two guards worth keeping:
+
+- **`INotificationSink` member count (17).** A member added or removed breaks the build, so it never
+  reaches a test — but a *default* interface method would not, and would leave a notification silently
+  unhandled. `GetInterfaceMap` catches exactly that case.
+- **Drop shape.** One assembly, no `HordeServer.*` / `EpicGames.*` leakage — the automated form of the
+  `<Private>false</Private>` rule in §3.1 and the no-vendoring rule in §3.1a.
+
+### Phase 1 — REST client + job/step outcomes ✅ **CODE COMPLETE, UNVERIFIED AGAINST DISCORD**
 Minimal REST client (post/edit message, embeds) + rate limiter. Implement `NotifyJobCompleteAsync`,
 `NotifyJobStepCompleteAsync`, `NotifyJobStepAbortedAsync`, `NotifyLabelCompleteAsync`,
-`NotifyJobScheduledAsync`. Mongo message-state collection for edit-in-place. Channel routing from
-server config. **This is the point where it's genuinely useful.**
+`NotifyJobScheduledAsync`. Channel routing from server config. **This is the point where it's
+genuinely useful.**
+
+Built 2026-07-25:
+
+- `DiscordRateLimiter` — per-route buckets, the 50/s global ceiling, `X-RateLimit-Scope` handling.
+  Time is behind an `IDiscordClock` seam so the tests assert *what it decides* rather than sleeping.
+- `DiscordClient` — `/api/v10` pinned in the base address, create/edit message, failures reported as
+  null rather than thrown. Owns a private `HttpClient`; **not** an `IHttpClientFactory` typed client,
+  because a transient typed client held by a singleton sink is a captive dependency and registering a
+  bare `HttpClient` would hijack the host server's own resolution.
+- `DiscordEmbedBuilder` / `DiscordMessageBuilder` — every limit in §3.3.3 enforced, including the
+  combined 6000 that the per-value limits do not imply. Truncation is always marked.
+- `DiscordNotificationProcessor` + the five job/step members, routed from `JobNotificationChannel`.
+
+**58 tests.** Two real bugs came out of writing them: the overflow-notice reserve was taken *after* the
+description had already spent the budget, and truncation could split a surrogate pair.
+
+> **Deferred: the Mongo message-state collection.** It was listed here for edit-in-place, but nothing
+> in Phase 1 edits anything — a finished job does not change, so each outcome is a fresh post. Its
+> first real consumer is issue triage in Phase 4, where the parent message *and* its thread id both
+> need storing (§3.3.6). Building it now would mean an unused collection with no way to test it short
+> of standing up MongoDB. `DiscordClient.EditMessageAsync` exists and is tested, so the client half is
+> ready when the consumer arrives.
+
+Not yet verified: anything about the messages themselves. No Discord application exists yet, so no
+message has ever been sent. Formatting, colours, embed rendering and channel permissions are all
+unexercised.
 
 ### Phase 2 — Remaining broadcast notifications
 `NotifyConfigUpdateAsync` / `NotifyConfigUpdateFailureAsync`, `SendAgentReportAsync`,
@@ -454,7 +506,7 @@ alone roughly a third of it. Phases 0–1 are a few days and deliver most of the
 
 | Risk | Mitigation |
 |---|---|
-| `INotificationSink` changes on engine upgrade → stale DLL fails at load | Rebuild the plugin as part of the engine-upgrade checklist; record the engine identity in the README (see below); run `tools/PluginProbe` after any engine change |
+| `INotificationSink` changes on engine upgrade → stale DLL fails at load | Rebuild the plugin as part of the engine-upgrade checklist; record the engine identity in the README (see below); run `dotnet test` after any engine change |
 | Plugin DLL not redeployed after a server upgrade | Bake the copy into the Horde deploy step rather than doing it by hand |
 | Bot token in `server.json` | Use the existing Secrets plugin or environment variables; never commit |
 | Discord API drift | Pin the API version in the base URL (`/api/v10`) |
@@ -466,9 +518,16 @@ The reference engine is a *source* build — `Engine/Build/Build.version` report
 `UE5`, and **`Changelist: 0`**, so there is no changelist to pin to. The assembly versions do not
 discriminate either: every `HordeServer.*.dll` is stamped `1.0.0.0` and only `EpicGames.Horde.dll`
 carries a real version (`5.8.0.0`). The usable identity is therefore **engine version + binary
-timestamp** (here 5.8.0, binaries built 2026-07-08), and on a CL-stamped build the changelist as well.
-Until a plugin build is verified against a CL-stamped engine, treat "rebuild and re-run
-`tools/PluginProbe`" as the real mitigation and the recorded version as advisory.
+timestamp** (5.8.0, binaries rebuilt 2026-07-25), and on a CL-stamped build the changelist as well.
+Until a plugin build is verified against a CL-stamped engine, treat "rebuild and re-run `dotnet test`"
+as the real mitigation and the recorded version as advisory.
+
+> **The engine bin directory is build output, and can simply not be there.** On 2026-07-25 the whole
+> `HordeServer/bin` tree was absent — no `HordeServer.*.dll` anywhere under the Horde source — so
+> nothing in this repo could compile until the server was rebuilt (`dotnet build
+> HordeServer/HordeServer.csproj -c Development`, 17s warm). A missing `Horde.local.props` looks
+> identical from the error message, so check both. The tests report *inconclusive* rather than failing
+> in either case.
 
 Recorded in the README under **Engine compatibility**; update it whenever the reference engine moves.
 

@@ -35,4 +35,22 @@
     <Optimize>true</Optimize>
   </PropertyGroup>
 
+  <!--
+    Test project defaults, mirroring Horde's own Directory.Build.props - same package versions, same suffix
+    convention - so a test project here looks like the ones it sits beside conceptually. Test methods are their
+    own documentation, so the repo-wide XML doc requirement is lifted for them and only for them.
+  -->
+  <PropertyGroup Condition="$(MSBuildProjectName.EndsWith('.Tests'))">
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <ItemGroup Condition="$(MSBuildProjectName.EndsWith('.Tests'))">
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.4.0" />
+    <PackageReference Include="MSTest.TestAdapter" Version="4.2.1" />
+    <PackageReference Include="MSTest.TestFramework" Version="4.2.1" />
+    <Using Include="Microsoft.VisualStudio.TestTools.UnitTesting" />
+  </ItemGroup>
+
 </Project>

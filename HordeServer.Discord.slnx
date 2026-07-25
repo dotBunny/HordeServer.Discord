@@ -12,8 +12,9 @@
   </Configurations>
 
   <Project Path="HordeServer.Discord/HordeServer.Discord.csproj" />
+  <Project Path="HordeServer.Discord.Tests/HordeServer.Discord.Tests.csproj" />
 
-  <!-- Phase 0 verification harness; in the solution so it keeps compiling against the engine. -->
+  <!-- Human-facing front end for the load probe the tests run; shares its implementation. -->
   <Project Path="tools/PluginProbe/PluginProbe.csproj" />
 
 </Solution>

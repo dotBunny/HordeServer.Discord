@@ -74,29 +74,40 @@ builds fail with MSB4126 even when the project itself is configured correctly.
 The build should be **clean with zero warnings** — `GenerateDocumentationFile` is on, so every public
 member needs an XML doc comment. Keep it that way.
 
-Output is a single `HordeServer.Discord.dll` (~14 KB at Phase 0). If engine assemblies ever appear in
-`bin/`, a `<Private>false</Private>` is missing from a `<Reference>`.
+Output is a single `HordeServer.Discord.dll` (~60 KB at Phase 1). If engine assemblies ever appear in
+`bin/`, a `<Private>false</Private>` is missing from a `<Reference>` — `DropIsASingleAssembly` in the
+test suite guards this.
 
 ### Verifying the plugin still loads
 
-There is no automated test yet (`HordeServer.Discord.Tests` is planned). The full check is to copy the
-DLL into a Horde server app directory and confirm the server logs `Added plugin 'Discord'` — but that
-needs MongoDB and Redis.
+The full check is to copy the DLL into a Horde server app directory and confirm the server logs
+`Added plugin 'Discord'` — but that needs MongoDB and Redis.
 
-**`tools/PluginProbe` is the lighter check that needs neither.** It replicates
-`ServerApp.CreatePluginCollection` — enumerate the app dir for `HordeServer.*.dll`, `Assembly.LoadFrom`
-each, look for `[Plugin]`, then call `PluginCollection.Add`. That last call is the valuable one; it
-validates the generic constraints on the config types.
+**`dotnet test` is the lighter check that needs neither, and is the gate.**
 
 ```bash
-dotnet build -c Development
-cp HordeServer.Discord/bin/Development/net10.0/HordeServer.Discord.dll "$HORDE_BIN_DIR/"
+dotnet test -c Development
+```
+
+`HordeServer.Discord.Tests` deploys the freshly built plugin into `$(HordeBinDir)` itself and then
+replicates `ServerApp.CreatePluginCollection` against it — enumerate the app dir for
+`HordeServer.*.dll`, `Assembly.LoadFrom` each, look for `[Plugin]`, then call `PluginCollection.Add`.
+That last call is the valuable one; it validates the generic constraints on the config types. It also
+asserts the sink still implements every `INotificationSink` member and that the drop is still one file.
+
+The probe logic lives in `tools/PluginProbe` and is shared. Running it directly prints a readable
+report, which is what you want when a test goes red after an engine change:
+
+```bash
 dotnet run --project tools/PluginProbe -c Development
 ```
 
-It takes the server directory from argv[0], the build-time `$(HordeBinDir)`, or `HORDE_BIN_DIR`, in
-that order — so on a configured machine it needs no arguments. Run it after any engine change. Note it
-is deliberately **not** named `HordeServer.*`; that pattern is what the server's plugin scan matches.
+Both take the server directory from the build-time `$(HordeBinDir)` or `HORDE_BIN_DIR` (the probe also
+accepts argv[0]), so on a configured machine neither needs arguments.
+
+Two naming notes. `PluginProbe` is deliberately **not** named `HordeServer.*`, so it can never be
+mistaken for a plugin. `HordeServer.Discord.Tests.dll` *does* match that pattern, exactly as Epic's own
+test assemblies do — harmless because it is never deployed, but never copy it beside the server.
 
 ## Architecture
 
@@ -109,8 +120,15 @@ is deliberately **not** named `HordeServer.*`; that pattern is what the server's
   user map and (from Phase 3) per-stream routing live here so they change without a restart.
 - **`DiscordNotificationSink : INotificationSink`** — 17 members. Horde's `NotificationService`
   resolves `IEnumerable<INotificationSink>` and fans out with **per-sink exception handling**, so this
-  plugin cannot disturb the Slack sink even if it throws. Keep members in interface order; it makes
-  diffing against the interface tractable when Epic changes it.
+  plugin cannot disturb the Slack sink even if it throws. Keep it thin — each member either forwards to
+  the processor or logs — and keep members in interface order; both are what make diffing against the
+  interface tractable when Epic changes it.
+- **`Notifications/DiscordNotificationProcessor`** — all the formatting and routing. Split out so the
+  sink stays diffable, mirroring how the Experimental plugin splits its Slack sink from its processor.
+- **`Client/`** — the hand-rolled Discord client. `DiscordRateLimiter` (per-route buckets, global 50/s,
+  behind an `IDiscordClock` seam so tests assert decisions rather than sleep), `DiscordClient` (REST,
+  `/api/v10` pinned, owns a private `HttpClient`), and the embed/message builders, which enforce
+  Discord's size limits rather than letting the API 400.
 
 `INotificationSink` is internal to Horde with **no stability guarantee**. After an engine upgrade,
 rebuild — a stale DLL against a newer server fails at plugin load rather than degrading.
@@ -134,6 +152,13 @@ rebuild — a stale DLL against a newer server fails at plugin load rather than 
 - **`ILogEventData` lives in `HordeServer.Compute`**, not `HordeServer.Build` — it reaches
   `INotificationSink` through the job-step members. Not discoverable by reading the interface; only
   the compiler tells you.
+- **Namespaces split across the server/shared boundary in ways that read wrong.** `IUser` is
+  `HordeServer.Users`, *not* `EpicGames.Horde.Users` (which exists and contains `UserId`).
+  `LogEventSeverity` is `EpicGames.Horde.Logs`, while `ILogEventData` is `HordeServer.Logs`. Copy the
+  using block from `DiscordNotificationSink.cs` rather than guessing.
+- **`field` is a contextual keyword in C# 14.** A loop variable named `field` inside a property
+  accessor now binds to the synthesized backing field and fails to compile. Relevant here because
+  "field" is the natural name for a Discord embed field.
 - **The `HordeBinDir` validation target must run `BeforeTargets="ResolveAssemblyReferences"`.** At
   `BeforeCompile` it fires *after* MSBuild has already emitted MSB3245 warnings for every engine
   reference, burying the actual explanation.

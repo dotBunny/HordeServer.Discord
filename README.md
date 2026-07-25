@@ -10,9 +10,13 @@ It runs **alongside** Horde's built-in Slack support rather than replacing it, s
 gradually or run both indefinitely.
 
 > [!WARNING]
-> **Early development.** The plugin installs and is wired into Horde's notification pipeline, but does
-> not send messages yet. It is safe to install — it simply does nothing. Follow the repository for
-> progress.
+> **Early development.** Job and step outcomes are sent to a configured channel. Build health issues,
+> configuration failures, farm reports and interactive triage are not implemented yet, and nothing has
+> been verified against a real Discord server — no message this plugin produces has ever actually been
+> delivered. Treat the formatting as unproven and point it at a test channel first.
+>
+> Installing it is safe regardless: with no bot token or no channel configured, it loads and does
+> nothing, and it cannot disturb the Slack sink either way.
 
 ## AI Disclaimer
 
@@ -35,7 +39,7 @@ engine it was built against matters. The current code is built and verified agai
 | | |
 |---|---|
 | Unreal Engine | **5.8.0** (`BranchName` UE5) |
-| Horde server binaries | built 2026-07-08 |
+| Horde server binaries | built 2026-07-25 |
 
 Check your own with `Engine/Build/Build.version`. A source build reports `"Changelist": 0`, so there is
 usually no changelist to compare against — the version and the build date are the practical identity.
@@ -126,10 +130,10 @@ server restart.
 | `ApplicationId` | string | Your Discord application (client) id. Needed for slash commands and interactive components. |
 | `GuildId` | string | The Discord server the bot operates in. Only used for member lookup and command registration — posting uses channel ids directly. |
 | `EnableInteractions` | bool | Whether to connect to Discord's gateway for buttons and modals. Posting works without it. Defaults to `true`. |
-| `JobNotificationChannel` | string | Channel for job-related notifications. Multiple channels may be separated by `;`. |
-| `AgentNotificationChannel` | string | Channel for agent-related notifications. |
-| `ConfigNotificationChannel` | string | Channel for configuration update failures. |
-| `UpdateStreamsNotificationChannel` | string | Channel for stream update failures. |
+| `JobNotificationChannel` | string | Channel for job and step outcomes. Multiple channels may be separated by `;`. **This is the only channel setting that does anything today.** |
+| `AgentNotificationChannel` | string | Channel for agent-related notifications. Not implemented yet. |
+| `ConfigNotificationChannel` | string | Channel for configuration update failures. Not implemented yet. |
+| `UpdateStreamsNotificationChannel` | string | Channel for stream update failures. Not implemented yet. |
 | `ErrorPrefix` | string | Emoji prefixed to error messages. Defaults to `:red_circle:`. |
 | `WarningPrefix` | string | Emoji prefixed to warning messages. Defaults to `:warning:`. |
 
@@ -138,6 +142,9 @@ server restart.
 Discord channels are identified by **numeric id**, not by name — there is no `#channel` syntax. In
 Discord, enable **Settings → Advanced → Developer Mode**, then right-click a channel and choose **Copy
 Channel ID**.
+
+If you copy a `#channel-name` across from your Slack settings, the plugin logs an error naming the
+offending value at startup rather than silently posting nowhere.
 
 ### Keeping the bot token out of `server.json`
 
@@ -198,14 +205,21 @@ gracefully. Rebuilding is a good step to add to your Horde deployment process.
 
 The version it is currently built against is recorded under
 [Engine compatibility](#engine-compatibility). To confirm a rebuild took without booting the full
-server — which needs MongoDB and Redis — copy the DLL into place and run the bundled probe:
+server — which needs MongoDB and Redis — run the tests:
+
+```
+dotnet test -c Development
+```
+
+They deploy the plugin into your server directory, replicate Horde's plugin discovery against it, and
+report whether the server would load it. For a readable breakdown when something fails, the same check
+is available as a console tool:
 
 ```
 dotnet run --project tools/PluginProbe -c Development
 ```
 
-It replicates Horde's plugin discovery and reports whether the server would load the plugin. See
-[CLAUDE.md](CLAUDE.md) for details.
+See [CLAUDE.md](CLAUDE.md) for details.
 
 ## Contributing
 
