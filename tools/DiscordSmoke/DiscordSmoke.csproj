@@ -44,9 +44,26 @@
     </AssemblyAttribute>
   </ItemGroup>
 
+  <!--
+    Where the engine assemblies are resolved from at runtime. Baked in rather than hardcoded for the same reason
+    the test assembly bakes it in: the path is machine-specific and must never be committed.
+  -->
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>HordeBinDir</_Parameter1>
+      <_Parameter2>$(HordeBinDir)</_Parameter2>
+    </AssemblyAttribute>
+  </ItemGroup>
+
+  <!--
+    PluginProbe is referenced for EngineAssemblyResolver and HordeBinDirLocator, not for the probe itself. Like the
+    test assembly, this tool loads Horde types without being the Horde server, so it has to teach the default load
+    context where the engine assemblies live before it touches one.
+  -->
   <ItemGroup>
     <ProjectReference Include="..\..\HordeServer.Discord\HordeServer.Discord.csproj" />
     <ProjectReference Include="..\HordeTestDoubles\HordeTestDoubles.csproj" />
+    <ProjectReference Include="..\PluginProbe\PluginProbe.csproj" />
   </ItemGroup>
 
   <ItemGroup>

@@ -101,12 +101,18 @@ namespace HordeServer
 		/// <summary>
 		/// Emoji used to prefix error messages. Accepts a unicode emoji or a custom emoji in <c>&lt;:name:id&gt;</c> form.
 		/// </summary>
-		public string ErrorPrefix { get; set; } = ":red_circle: ";
+		/// <remarks>
+		/// A literal unicode character, not a <c>:red_circle:</c> shortcode. Slack resolves shortcodes server-side and
+		/// Epic's sink relies on that; Discord does not. Its client expands them as a human types, so anything posted
+		/// through the API is stored and rendered exactly as sent - a shortcode arrives as the punctuation it is
+		/// spelled with. Custom guild emoji are the <c>&lt;:name:id&gt;</c> form, which is a different syntax again.
+		/// </remarks>
+		public string ErrorPrefix { get; set; } = "🔴 ";
 
 		/// <summary>
-		/// Emoji used to prefix warning messages.
+		/// Emoji used to prefix warning messages. A unicode emoji, for the reason given on <see cref="ErrorPrefix"/>.
 		/// </summary>
-		public string WarningPrefix { get; set; } = ":warning: ";
+		public string WarningPrefix { get; set; } = "⚠️ ";
 
 		/// <summary>
 		/// Returns whether enough is configured for the plugin to actually send anything.

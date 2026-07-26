@@ -229,8 +229,12 @@ All under `Horde:Plugins:Discord` in `server.json`. Changing any of them require
 | `ConfigNotificationChannel` | string | Override for configuration update failures. |
 | `UpdateStreamsNotificationChannel` | string | Override for stream configuration update failures. |
 | `DeviceNotificationChannel` | string | Override for device service notices. Device *reports* carry their own channel and are routed through the map above. |
-| `ErrorPrefix` | string | Emoji prefixed to error messages. Defaults to `:red_circle:`. |
-| `WarningPrefix` | string | Emoji prefixed to warning messages. Defaults to `:warning:`. |
+| `ErrorPrefix` | string | Emoji prefixed to error messages. Defaults to `🔴 `. |
+| `WarningPrefix` | string | Emoji prefixed to warning messages. Defaults to `⚠️ `. |
+
+Both prefixes must be a **literal emoji character**, or a custom guild emoji written `<:name:id>`. A
+`:red_circle:` shortcode is not expanded by Discord for anything a bot posts, and will appear in the
+message as the text you typed.
 
 ### Dashboard deep links
 

@@ -126,8 +126,15 @@ proves nothing about the message itself. Say so precisely when reporting.
 **Never put an engine type in a `[DataRow]`** — MSTest drops the whole test during discovery and the
 run still reports green. See the gotchas in `CLAUDE.md`.
 
-For the message, the honest check is a real send to a test channel. If no Discord credentials exist
-yet, say the formatting is unverified rather than implying it was tested.
+For the message, the honest check is a real send to a test channel — `dotnet run --project
+tools/DiscordSmoke -c Development -- <scenario>`, adding a scenario for the member if it has none.
+Credentials are configured, so there is no excuse for skipping it; if you do skip it, say the
+formatting is unverified rather than implying it was tested.
+
+**Then look at the channel.** The smoke tool reports what Discord accepted, and Discord accepts plenty
+that reads badly — the `:red_circle:` prefixes were accepted for three phases. Reading the messages
+back with `GET /channels/{id}/messages` is a decent substitute for eyes on the client, and it catches
+anything stored differently from how it was built.
 
 ## Finally
 

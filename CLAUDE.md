@@ -13,10 +13,10 @@ into a Horde server's application directory — no changes to Horde or to Unreal
 
 **The design and roadmap live in [`.claude/PLAN.md`](.claude/PLAN.md). Read it before doing
 substantive work** — it records the architecture investigation (with engine file/line references),
-the decisions taken and why, and the phase breakdown. Current status: **Phases 0–3 complete** — fifteen
-of the seventeen `INotificationSink` members deliver, with DMs and mentions, all unverified against a
-real Discord server. Phase 4 is the gateway and interactive issue triage, and it needs a real Discord
-application to develop against.
+the decisions taken and why, and the phase breakdown. Current status: **Phases 0–3 complete and verified against a real Discord
+server** (2026-07-26) — fifteen of the seventeen `INotificationSink` members deliver, with DMs and
+mentions, and all fifteen `DiscordSmoke` scenarios post to a live guild. Phase 4 is the gateway and
+interactive issue triage.
 
 ## The two trees
 
@@ -198,6 +198,22 @@ rebuild — a stale DLL against a newer server fails at plugin load rather than 
 
 ## Gotchas found the hard way
 
+- **Discord does not expand `:shortcode:` emoji.** Slack resolves them server-side and Epic's sink
+  relies on it; Discord's *client* expands them as a human types, so anything a bot posts through the
+  API keeps the colons and shows them as text. Use the literal unicode character, or `<:name:id>` for a
+  custom guild emoji. This shipped in `ErrorPrefix` / `WarningPrefix` and survived three phases,
+  because the unit tests blank both to keep expected payloads readable. Whenever you port a *value*
+  across from the Slack sink rather than its structure, ask whether Slack was interpreting it.
+- **`DiscordClient` logs a rejected request and returns; it never throws.** That is required of it —
+  inside a real server a sink that throws is a sink that disturbs the other sinks — but it means
+  "`SendAsync` returned" is not "the message arrived". Anything judging delivery has to watch the log,
+  which is what `SmokeLog` exists for. `DiscordSmoke` reported fifteen of fifteen scenarios sent while
+  Discord was 403-ing every one.
+- **Anything outside the server that loads a Horde type needs `EngineAssemblyResolver` installed
+  first**, and installed in a method that mentions no Horde type — the JIT resolves a method's types
+  when it compiles it, so the install must be one call frame above the first use. The tests do it in a
+  `[ModuleInitializer]`; `PluginProbe` and `DiscordSmoke` do it in a `Main` that immediately hands off
+  to a `NoInlining` method. Symptom when missing: `FileNotFoundException` for `HordeServer.Shared`.
 - **`ILogEventData` lives in `HordeServer.Compute`**, not `HordeServer.Build` — it reaches
   `INotificationSink` through the job-step members. Not discoverable by reading the interface; only
   the compiler tells you.

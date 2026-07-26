@@ -30,8 +30,9 @@ namespace HordeServer.Discord.Tests.Notifications
 	/// field limit, an embed that overflows the combined ceiling, a link built into a field name where Discord will
 	/// not render it - and only the serialised payload shows those.
 	///
-	/// It proves what would be sent, not what Discord does with it. No message from this plugin has ever been posted
-	/// to a real server.
+	/// It proves what would be sent, not what Discord does with it. <c>tools/DiscordSmoke</c> is the other half, and
+	/// it earns its keep: the first real run turned up emoji shortcodes that every assertion here was blind to,
+	/// because these tests blank the prefixes to keep the expected payloads readable.
 	/// </remarks>
 	[TestClass]
 	public sealed class DiscordNotificationProcessorTests

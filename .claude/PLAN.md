@@ -1,10 +1,11 @@
 # Horde → Discord Notification Plugin — Investigation & Plan
 
-> **Status:** Phases 0–3 built (2026-07-25). Fifteen of the seventeen `INotificationSink` members
-> deliver; only the two issue members remain, and they are Phase 4 along with the gateway. Nothing has
-> been sent to a real Discord server yet — no application, bot token or guild exists — so message
-> formatting, DM delivery and mention rendering are all unverified. Next action is standing up a
-> Discord application, which Phase 4 needs anyway.
+> **Status:** Phases 0–3 built (2026-07-25) and **verified against a real Discord server
+> (2026-07-26)**. Fifteen of the seventeen `INotificationSink` members deliver; only the two issue
+> members remain, and they are Phase 4 along with the gateway. All fifteen `tools/DiscordSmoke`
+> scenarios now post successfully to a live guild, including the DMs and the mention. That run found
+> two harness defects and one shipped bug — see Phase 3's note — which is the argument for having
+> built the tool. Next action is Phase 4, which needs the same Discord application.
 > **Written:** 2026-07-25, against the DETHOL source engine (UE 5.8).
 > All line references below point into `Engine/Source/Programs/Horde` in that engine — re-verify them
 > after an engine upgrade, since none of it is a stable public API.
@@ -616,7 +617,7 @@ Beyond the original Phase 0 checks, the suite adds two guards worth keeping:
 - **Drop shape.** One assembly, no `HordeServer.*` / `EpicGames.*` leakage — the automated form of the
   `<Private>false</Private>` rule in §3.1 and the no-vendoring rule in §3.1a.
 
-### Phase 1 — REST client + job/step outcomes ✅ **CODE COMPLETE, UNVERIFIED AGAINST DISCORD**
+### Phase 1 — REST client + job/step outcomes ✅ **COMPLETE, VERIFIED AGAINST DISCORD 2026-07-26**
 Minimal REST client (post/edit message, embeds) + rate limiter. Implement `NotifyJobCompleteAsync`,
 `NotifyJobStepCompleteAsync`, `NotifyJobStepAbortedAsync`, `NotifyLabelCompleteAsync`,
 `NotifyJobScheduledAsync`. Channel routing from server config. **This is the point where it's
@@ -651,7 +652,7 @@ Not yet verified: anything about the messages themselves. No Discord application
 message has ever been sent. Formatting, colours, embed rendering and channel permissions are all
 unexercised.
 
-### Phase 2 — Remaining broadcast notifications ✅ **CODE COMPLETE, UNVERIFIED AGAINST DISCORD**
+### Phase 2 — Remaining broadcast notifications ✅ **COMPLETE, VERIFIED AGAINST DISCORD 2026-07-26**
 `NotifyConfigUpdateAsync` / `NotifyConfigUpdateFailureAsync`, `SendAgentReportAsync`,
 `NotifyDeviceServiceAsync`, `SendDeviceIssueReportAsync`, `SendSessionConflictReportAsync`,
 `NotifyTestHealthReportAsync`. All channel-post, no interactivity — mostly formatting work.
@@ -691,7 +692,7 @@ end-to-end tests that assert on the JSON that would reach Discord, which is the 
 interesting failures show up — a code fence severed by the 1024-character field limit, an embed over
 the combined ceiling, a link built into a field name where Discord renders it as source.
 
-### Phase 3 — Users, mentions, DMs ✅ **CODE COMPLETE, UNVERIFIED AGAINST DISCORD**
+### Phase 3 — Users, mentions, DMs ✅ **COMPLETE, VERIFIED AGAINST DISCORD 2026-07-26**
 `IDiscordUserResolver` over the hot-reloadable config map, with `MemoryCache` and warn-once on
 unmapped users. DM channel creation (`POST /users/@me/channels`), @-mention rendering, per-user
 `NotifyJobCompleteAsync(IUser, …)`, `GetDirectMessageLinkAsync` / `GetChannelLinkAsync`.
@@ -748,6 +749,29 @@ Other decisions:
   Phase 4. It earns its place now because `DiscordRoutingReport` walks every workflow's `triageAlias`,
   `escalateAlias` and `triageTypeAliases` and names the gaps at startup, so the map can be filled in
   before it is urgent rather than during an outage.
+
+**First real send, 2026-07-26.** A Discord application was created and the bot invited to a guild, and
+all fifteen `tools/DiscordSmoke` scenarios were posted to a live channel — twelve channel messages and
+five DMs, the mention among them. Three things came out of it, in ascending order of interest:
+
+1. `DiscordSmoke` could not start. It references the engine assemblies with `Private=false` like
+   everything else here, so it needs `EngineAssemblyResolver` installed before it touches a Horde type,
+   exactly as the test assembly does. It had never been run.
+2. `DiscordSmoke` then reported all fifteen scenarios sent while Discord was rejecting every one with a
+   403. `DiscordClient` logs a failed request and returns rather than throwing — required of it, since
+   a sink that throws inside the server disturbs the other sinks — so returning normally says nothing
+   about arrival. The tool now watches the log (`SmokeLog`) and a scenario passes only on silence.
+   **A verification tool that cannot fail is worse than no tool**, and this one had been quietly
+   incapable of failing since it was written.
+3. The shipped bug: `ErrorPrefix` and `WarningPrefix` defaulted to `:red_circle:` and `:warning:`,
+   ported across from the Slack sink's settings. **Slack resolves shortcodes server-side; Discord does
+   not** — its client expands them as a human types, so anything a bot posts through the API keeps the
+   colons. Every error and warning title in the plugin carries one of these. The unit tests blank both
+   prefixes to keep expected payloads readable, so nothing in 175 tests could have caught it; the
+   regression test in `DiscordServerConfigTests` asserts on the defaults themselves instead.
+
+The third is the one that justifies the phase gate. It was invisible to every assertion in the suite,
+survived three phases, and took one glance at a real channel.
 
 **164 tests**, up from 131. The job and step members remain untested end to end: `IJob` has 61 members
 and `IJobStep` 38, so a stand-in is a disproportionate amount of boilerplate. The routing they now

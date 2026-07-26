@@ -9,6 +9,8 @@ using HordeServer.Streams;
 using HordeTestDoubles;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using PluginProbe;
+using System.Runtime.CompilerServices;
 
 namespace DiscordSmoke
 {
@@ -26,7 +28,42 @@ namespace DiscordSmoke
 	/// </remarks>
 	static class Program
 	{
+		/// <summary>
+		/// Points the runtime at the built Horde server before anything here touches a Horde type.
+		/// </summary>
+		/// <remarks>
+		/// This tool references the engine assemblies with <c>Private=false</c>, so they are not beside its own
+		/// binaries and the default load context cannot find them. The plugin resolves them because inside a real
+		/// server it *is* the server that owns them; here nothing does, so the resolver has to be installed by hand.
+		///
+		/// Nothing but the install may happen in this method. The JIT resolves every type a method references when
+		/// it compiles that method, so mentioning a Horde type here - even in a variable that is never used - would
+		/// fail before the handler was attached. <see cref="RunAsync"/> is where the tool actually starts, and it is
+		/// <see cref="MethodImplOptions.NoInlining"/> so it cannot be folded back into this one.
+		/// </remarks>
 		static async Task<int> Main(string[] args)
+		{
+			string? appDir = HordeBinDirLocator.Resolve(typeof(Program).Assembly);
+
+			if (appDir == null)
+			{
+				Console.Error.WriteLine(HordeBinDirLocator.NotFoundMessage);
+				return 2;
+			}
+
+			if (!Directory.Exists(appDir))
+			{
+				Console.Error.WriteLine($"Horde server directory does not exist: {appDir}");
+				return 2;
+			}
+
+			EngineAssemblyResolver.Install(appDir);
+
+			return await RunAsync(args);
+		}
+
+		[MethodImpl(MethodImplOptions.NoInlining)]
+		static async Task<int> RunAsync(string[] args)
 		{
 			if (args.Contains("--help") || args.Contains("-h"))
 			{
@@ -65,35 +102,66 @@ namespace DiscordSmoke
 
 			Console.WriteLine($"Sending {chosen.Count} scenario(s) to channel {settings.ChannelId}:");
 
-			using DiscordClient client = CreateClient(settings);
-			DiscordNotificationProcessor processor = CreateProcessor(settings, client);
+			using SmokeLog log = new SmokeLog();
+			using ILoggerFactory loggerFactory = LoggerFactory.Create(builder => builder
+				.AddProvider(log)
+				.SetMinimumLevel(LogLevel.Warning));
+
+			using DiscordClient client = CreateClient(settings, loggerFactory);
+			DiscordNotificationProcessor processor = CreateProcessor(settings, client, loggerFactory);
 
 			int failures = 0;
 
 			foreach (Scenario scenario in chosen)
 			{
 				Console.Write($"  {scenario.Name,-24} {scenario.Description} ... ");
+				log.Clear();
 
 				try
 				{
 					await scenario.RunAsync(processor, CancellationToken.None);
-					Console.WriteLine("sent");
 				}
 				catch (Exception ex)
 				{
 					// Keep going. One scenario failing is a result, not a reason to stop looking at the others.
 					failures++;
-					Console.WriteLine($"FAILED: {ex.GetType().Name}: {ex.Message}");
+					Console.WriteLine($"THREW: {ex.GetType().Name}: {ex.Message}");
+					continue;
+				}
+
+				// Returning normally is not the same as arriving. The client logs a rejected request rather than
+				// throwing, so a scenario is only sent if it also had nothing to complain about.
+				IReadOnlyList<string> problems = log.Problems;
+
+				if (problems.Count == 0)
+				{
+					Console.WriteLine("sent");
+					continue;
+				}
+
+				failures++;
+				Console.WriteLine($"REJECTED ({problems.Count})");
+
+				foreach (string message in problems)
+				{
+					Console.WriteLine($"    {message}");
 				}
 			}
 
 			Console.WriteLine();
-			Console.WriteLine(failures == 0
-				? "All scenarios were accepted by Discord. Go and look at the channel - delivery is not legibility."
-				: $"{failures} scenario(s) threw. Anything logged above as a Discord API error is a permissions or "
-					+ "id problem rather than a bug in the message.");
 
-			return failures == 0 ? 0 : 1;
+			if (failures == 0)
+			{
+				Console.WriteLine("All scenarios were accepted by Discord. Go and look at the channel - delivery is "
+					+ "not legibility.");
+				return 0;
+			}
+
+			Console.WriteLine($"{failures} of {chosen.Count} scenario(s) did not arrive.");
+			Console.WriteLine();
+			Console.WriteLine(Diagnose(log.SeenCodes));
+
+			return 1;
 		}
 
 		static void PrintUsage()
@@ -145,24 +213,58 @@ namespace DiscordSmoke
 			return chosen;
 		}
 
-		static DiscordClient CreateClient(SmokeSettings settings)
+		/// <summary>
+		/// Explains the Discord error codes a run produced, in the order they are worth acting on.
+		/// </summary>
+		/// <remarks>
+		/// Every one of these is a setup problem on the Discord side rather than a bug here, and every one of them
+		/// costs a while to work out from the raw code - which is the argument for writing them down once.
+		/// </remarks>
+		static string Diagnose(IReadOnlyCollection<int> codes)
 		{
-			ILoggerFactory loggerFactory = LoggerFactory.Create(builder => builder
-				.AddSimpleConsole(options => options.SingleLine = true)
-				.SetMinimumLevel(LogLevel.Information));
+			if (codes.Count == 0)
+			{
+				return "Nothing was rejected with a Discord error code, so look at the messages logged above.";
+			}
 
+			List<string> notes = new List<string>();
+
+			foreach (int code in codes)
+			{
+				notes.Add(code switch
+				{
+					10003 => "  10003 Unknown Channel - DiscordTestChannelId does not name a channel the bot can see. "
+						+ "Check the id, and that it is in DiscordGuildId.",
+					40001 => "  40001 Unauthorized - DiscordBotToken is wrong or was regenerated. Copy it again from "
+						+ "the application's Bot page.",
+					50001 => "  50001 Missing Access - the bot cannot see the channel. Invite it to the guild, then "
+						+ "grant it View Channel, Send Messages and Embed Links *on that channel* - a role permission "
+						+ "is overridden by a channel one.",
+					50007 => "  50007 Cannot Send Messages To This User - the recipient does not accept direct "
+						+ "messages from server members. Enable them for the test guild, under Privacy Settings.",
+					50013 => "  50013 Missing Permissions - the bot can see the channel but may not post in it. Embed "
+						+ "Links is the one usually missing, and without it every notification is dropped.",
+					50035 => "  50035 Invalid Form Body - Discord rejected the message itself. Unlike the others this "
+						+ "IS a bug here; the body logged above says which field.",
+					50278 => "  50278 No Mutual Guilds - DiscordTestUserId is not a member of DiscordGuildId, or is "
+						+ "not the id it looks like. A bot may only DM someone who shares a server with it.",
+					_ => $"  {code} - look it up in Discord's error code list; the logged body says more.",
+				});
+			}
+
+			return String.Join(Environment.NewLine, notes);
+		}
+
+		static DiscordClient CreateClient(SmokeSettings settings, ILoggerFactory loggerFactory)
+		{
 			return DiscordClient.Create(
 				Options.Create(ServerConfig(settings)),
 				new DiscordRateLimiter(loggerFactory.CreateLogger<DiscordRateLimiter>()),
 				loggerFactory.CreateLogger<DiscordClient>());
 		}
 
-		static DiscordNotificationProcessor CreateProcessor(SmokeSettings settings, DiscordClient client)
+		static DiscordNotificationProcessor CreateProcessor(SmokeSettings settings, DiscordClient client, ILoggerFactory loggerFactory)
 		{
-			ILoggerFactory loggerFactory = LoggerFactory.Create(builder => builder
-				.AddSimpleConsole(options => options.SingleLine = true)
-				.SetMinimumLevel(LogLevel.Information));
-
 			IOptions<DiscordServerConfig> serverConfig = Options.Create(ServerConfig(settings));
 			IOptions<BuildServerConfig> buildServerConfig = Options.Create(new BuildServerConfig());
 			StaticOptionsMonitor<DiscordConfig> pluginConfig = new StaticOptionsMonitor<DiscordConfig>(PluginConfig(settings, loggerFactory));
