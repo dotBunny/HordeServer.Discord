@@ -173,6 +173,13 @@ reason, since someone reading a red test ends up in its types.
   behind an `IDiscordClock` seam so tests assert decisions rather than sleep), `DiscordClient` (REST,
   `/api/v10` pinned, owns a private `HttpClient`), and the embed/message builders, which enforce
   Discord's size limits rather than letting the API 400.
+- **`Client/DiscordGateway`** — the inbound half, and the only part of the plugin Discord talks *to*.
+  A websocket, because the alternative is an HTTP interactions endpoint needing a publicly reachable
+  URL, which a build server usually is not. Registered as an `IHostedService` and gated on
+  `EnableInteractions`; notifications work with it switched off. Two seams keep it testable —
+  `IDiscordWebSocket` for the socket and `IDiscordClock` for the heartbeat — and the decisions
+  (close-code classification, backoff) are pure functions in `DiscordGatewayPolicy`. Live-checkable
+  with `dotnet run --project tools/DiscordSmoke -c Development -- --gateway 50`.
 
 `INotificationSink` is internal to Horde with **no stability guarantee**. After an engine upgrade,
 rebuild — a stale DLL against a newer server fails at plugin load rather than degrading.
@@ -248,6 +255,11 @@ rebuild — a stale DLL against a newer server fails at plugin load rather than 
   `BeforeCompile` it fires *after* MSBuild has already emitted MSB3245 warnings for every engine
   reference, burying the actual explanation.
 - **`PluginName` normalises to lowercase** — the plugin registers as `discord`, not `Discord`.
+- **Closing a gateway socket with `1000` destroys the session.** A clean close tells Discord the
+  session is finished, so the state a `RESUME` would replay from is discarded and the next connection
+  has no choice but to identify again. Deliberate hang-ups use `4000`
+  (`DiscordGateway.ResumableCloseCode`). This fails silently — everything still works, it just quietly
+  re-identifies every time and eats the daily session-start allowance.
 - **Discord modals accept text inputs only, max 5.** Slack's "Mark Fixed" view uses radio groups and a
   select menu and can present seven inputs. This is a component-type mismatch, not a count problem.
   The agreed resolution is in `PLAN.md` §3.3.4.

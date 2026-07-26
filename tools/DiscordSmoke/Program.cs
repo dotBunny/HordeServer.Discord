@@ -82,6 +82,11 @@ namespace DiscordSmoke
 			Console.WriteLine(settings!.Describe());
 			Console.WriteLine();
 
+			if (args.Contains("--gateway"))
+			{
+				return await RunGatewayAsync(settings, HoldSeconds(args));
+			}
+
 			IReadOnlyList<Scenario> all = Scenarios.All(settings);
 			IReadOnlyList<Scenario> chosen = Choose(all, args, out string? unknown);
 
@@ -164,13 +169,95 @@ namespace DiscordSmoke
 			return 1;
 		}
 
+		/// <summary>
+		/// Opens a real gateway connection and reports what it does.
+		/// </summary>
+		/// <remarks>
+		/// The counterpart to the scenarios, for the inbound half. The unit tests drive the state machine through a
+		/// scripted socket and prove it reconnects correctly; they cannot prove the bot token is accepted at
+		/// identify, that intents of zero are allowed, or that the heartbeat interval Discord actually sends is the
+		/// one the code expects. Holding the connection past one interval is what checks the last of those, which is
+		/// why the hold is adjustable and worth setting above 41 seconds at least once.
+		/// </remarks>
+		static async Task<int> RunGatewayAsync(SmokeSettings settings, int holdSeconds)
+		{
+			using ILoggerFactory loggerFactory = LoggerFactory.Create(builder => builder
+				.AddSimpleConsole(options => options.SingleLine = true)
+				.SetMinimumLevel(LogLevel.Information));
+
+			using DiscordClient client = CreateClient(settings, loggerFactory);
+			using DiscordGateway gateway = new DiscordGateway(
+				Options.Create(ServerConfig(settings)),
+				client,
+				loggerFactory.CreateLogger<DiscordGateway>());
+
+			int dispatches = 0;
+			gateway.DispatchReceived += dispatch =>
+			{
+				dispatches++;
+				Console.WriteLine($"  dispatch: {dispatch.EventName}");
+			};
+
+			Console.WriteLine($"Connecting to the gateway, holding for {holdSeconds}s.");
+
+			using CancellationTokenSource stopping = new CancellationTokenSource();
+			Task running = gateway.RunAsync(stopping.Token);
+
+			DateTime deadline = DateTime.UtcNow.AddSeconds(holdSeconds);
+
+			while (DateTime.UtcNow < deadline && !running.IsCompleted)
+			{
+				await Task.Delay(TimeSpan.FromMilliseconds(250.0));
+			}
+
+			bool connected = gateway.IsConnected;
+
+			await stopping.CancelAsync();
+			await running;
+
+			Console.WriteLine();
+
+			if (!connected)
+			{
+				Console.WriteLine("The gateway never reached READY. The log above says why; 4004 is a bad bot token "
+					+ "and 4014 is a privileged intent that was requested but not granted.");
+				return 1;
+			}
+
+			Console.WriteLine($"Connected as {gateway.BotUsername} ({gateway.BotUserId}), {dispatches} dispatch(es) "
+				+ "received.");
+			Console.WriteLine(holdSeconds > 45
+				? "The hold covered a full heartbeat interval, so the heartbeat was acknowledged at least once."
+				: "Held for less than one heartbeat interval - re-run with --gateway 50 to exercise the heartbeat.");
+
+			return 0;
+		}
+
+		/// <summary>
+		/// How long <c>--gateway</c> should hold the connection, from the first number on the command line.
+		/// </summary>
+		static int HoldSeconds(string[] args)
+		{
+			foreach (string arg in args)
+			{
+				if (Int32.TryParse(arg, out int seconds) && seconds > 0)
+				{
+					return seconds;
+				}
+			}
+
+			return 15;
+		}
+
 		static void PrintUsage()
 		{
 			Console.WriteLine("""
 				Posts one of every Horde notification to a Discord channel, so the formatting can be looked at.
 
-				  dotnet run --project tools/DiscordSmoke -c Development                 all scenarios
-				  dotnet run --project tools/DiscordSmoke -c Development -- step label   just those
+				  dotnet run --project tools/DiscordSmoke -c Development                    all scenarios
+				  dotnet run --project tools/DiscordSmoke -c Development -- step label      just those
+				  dotnet run --project tools/DiscordSmoke -c Development -- --gateway 50    connect the gateway
+				                                                                            instead, holding for 50s
 
 				Credentials come from Horde.local.props (git-ignored) or the DISCORD_* environment variables.
 				See Horde.local.props.template.

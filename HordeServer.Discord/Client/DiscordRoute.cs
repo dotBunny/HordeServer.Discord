@@ -50,6 +50,12 @@ namespace HordeServer.Discord.Client
 			=> new DiscordRoute("POST /users/@me/channels");
 
 		/// <summary>
+		/// Asking where the gateway is.
+		/// </summary>
+		public static DiscordRoute GetGatewayBot()
+			=> new DiscordRoute("GET /gateway/bot");
+
+		/// <summary>
 		/// Responding to an interaction.
 		/// </summary>
 		/// <remarks>

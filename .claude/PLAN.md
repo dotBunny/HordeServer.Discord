@@ -475,7 +475,9 @@ HordeServer.Discord/                         (this repo)
 │     ├─ DiscordRateLimiter.cs            ✅ per-route buckets + global, over an IDiscordClock seam
 │     ├─ DiscordEmbed*.cs / Message*.cs   ✅ builders, with every limit in §3.3.3 enforced
 │     ├─ DiscordMarkdown.cs               ✅ escaping for text that came from a build log
-│     ├─ DiscordGateway.cs                ▫️ ClientWebSocket: identify/heartbeat/resume/dispatch
+│     ├─ DiscordGateway.cs                ✅ identify/heartbeat/resume/dispatch, over an IDiscordWebSocket
+│     │                                      seam. DiscordGatewayProtocol.cs holds the opcodes and the
+│     │                                      pure close-code/backoff policy
 │     ├─ Components.cs                    ▫️ action rows, buttons, modals
 │     └─ DiscordInteractionHandler.cs     ▫️ buttons + modal → IssueService verbs
 ├─ tools/PluginProbe/                     ✅ the load probe - replicates
@@ -788,6 +790,27 @@ and tested directly, which leaves those members as thin wrappers over covered co
 `DiscordGateway` (identify / heartbeat with jitter / resume with session id + sequence / resumable
 vs. terminal close codes / backoff). `NotifyIssueUpdatedAsync` and `SendIssueReportAsync` building
 the triage thread (§3.3.6) with action-row buttons, plus DM variants carrying their own buttons.
+
+**Gateway built and verified live, 2026-07-26.** Connects, identifies, and holds a session through a
+heartbeat interval against the real gateway. 39 tests drive the state machine through an
+`IDiscordWebSocket` seam, which is what makes the cases that matter reachable at all — a zombied
+connection, an `INVALID_SESSION`, a close code that must not be resumed. Three things settled while
+building it:
+
+- **Intents are zero.** Intents subscribe a bot to categories of guild event, and this plugin wants
+  none: `INTERACTION_CREATE` is delivered regardless of them. Worth stating because the alternative is
+  expensive — a privileged intent such as `GUILD_MEMBERS` has to be enabled in the developer portal
+  and, past 100 guilds, forces the application through Discord's verification. Requesting nothing also
+  makes `4014 Disallowed intents` structurally impossible.
+- **Closing cleanly destroys the session.** A `1000` close tells Discord the session is finished and
+  it discards the state a `RESUME` would replay from, so every deliberate hang-up uses `4000` instead.
+  This is the easiest way to write a gateway that silently re-identifies on every reconnect and burns
+  through the daily session-start limit while appearing to work.
+- **`4007` and `4009` are recoverable but the session behind them is not.** Both mean reconnect;
+  neither means resume. Resuming from a sequence the server has forgotten just earns another `4007`.
+
+Still to come in this phase: the interaction handler, components, the modal flow, and the last two
+sink members.
 
 Interaction handler mapping component `custom_id`s to the same `IssueService` calls the Slack sink
 makes — `ack` / `accept` / `decline`, in both DM and channel flavours (Slack keeps two handlers,

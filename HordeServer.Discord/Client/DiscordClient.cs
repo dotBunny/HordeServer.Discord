@@ -217,6 +217,59 @@ namespace HordeServer.Discord.Client
 			return await IsSuccessAsync(response, "edit message {MessageId} in channel {ChannelId}", reference.MessageId, reference.ChannelId);
 		}
 
+		/// <summary>
+		/// Asks Discord which gateway host to connect to.
+		/// </summary>
+		/// <remarks>
+		/// Not a constant, and not cached across sessions. Discord hands out a URL per bot and reserves the right to
+		/// move it; the documented contract is to ask again for each new connection rather than to remember one. A
+		/// *resume* is the exception and goes to the <c>resume_gateway_url</c> from <c>READY</c> instead, which is
+		/// why <see cref="DiscordGateway"/> only calls this when starting a fresh session.
+		///
+		/// The <c>/gateway/bot</c> form rather than plain <c>/gateway</c> because it authenticates, so a bad token
+		/// surfaces here as a clean 401 rather than as a websocket that connects and is then closed with 4004.
+		/// </remarks>
+		/// <param name="cancellationToken">Cancellation token for the operation.</param>
+		/// <returns>The websocket URL, or null if it could not be retrieved.</returns>
+		public async Task<string?> GetGatewayUrlAsync(CancellationToken cancellationToken)
+		{
+			using HttpResponseMessage response = await _rateLimiter.SendAsync(
+				DiscordRoute.GetGatewayBot(),
+				token => _httpClient.SendAsync(new HttpRequestMessage(HttpMethod.Get, "gateway/bot"), token),
+				cancellationToken);
+
+			if (!await IsSuccessAsync(response, "look up the gateway URL"))
+			{
+				return null;
+			}
+
+			try
+			{
+				GatewayInfo? info = await response.Content.ReadFromJsonAsync<GatewayInfo>(s_jsonOptions, cancellationToken);
+
+				if (info?.Url == null)
+				{
+					_logger.LogError("Discord returned no gateway URL");
+					return null;
+				}
+
+				// Worth logging once per session. A bot that has exhausted its daily identify allowance connects,
+				// gets closed, and reconnects forever, and this is the only place that says so.
+				if (info.SessionStartLimit != null && info.SessionStartLimit.Remaining <= 0)
+				{
+					_logger.LogError("Discord reports no session starts remaining (resets in {ResetAfter}ms). "
+						+ "Repeated reconnects will fail until then.", info.SessionStartLimit.ResetAfter);
+				}
+
+				return info.Url;
+			}
+			catch (JsonException ex)
+			{
+				_logger.LogError(ex, "Could not read the gateway URL Discord returned");
+				return null;
+			}
+		}
+
 		static HttpRequestMessage CreateRequest(HttpMethod method, string path, string payload)
 			=> new HttpRequestMessage(method, path)
 			{
@@ -304,6 +357,35 @@ namespace HordeServer.Discord.Client
 		{
 			[JsonPropertyName("recipient_id")]
 			public string? RecipientId { get; set; }
+		}
+
+		/// <summary>
+		/// Response body of <c>GET /gateway/bot</c>.
+		/// </summary>
+		sealed class GatewayInfo
+		{
+			[JsonPropertyName("url")]
+			public string? Url { get; set; }
+
+			[JsonPropertyName("session_start_limit")]
+			public SessionStartLimit? SessionStartLimit { get; set; }
+		}
+
+		/// <summary>
+		/// How many new gateway sessions the bot may still start today.
+		/// </summary>
+		/// <remarks>
+		/// Separate from the request rate limit and much less forgiving: 1000 a day for a small bot. Resuming does
+		/// not count against it, which is the practical reason the resume path in <see cref="DiscordGateway"/> is
+		/// worth having rather than simply re-identifying every time.
+		/// </remarks>
+		sealed class SessionStartLimit
+		{
+			[JsonPropertyName("remaining")]
+			public int Remaining { get; set; }
+
+			[JsonPropertyName("reset_after")]
+			public long ResetAfter { get; set; }
 		}
 	}
 

@@ -50,6 +50,11 @@ namespace HordeServer
 				sp.GetRequiredService<DiscordRateLimiter>(),
 				sp.GetRequiredService<ILogger<DiscordClient>>()));
 
+			// The inbound half. Registered whatever the configuration says, because it reports at startup why it is
+			// not running - same reasoning as the sink below. It gates itself on DiscordGateway.IsEnabled.
+			serviceCollection.AddSingleton<DiscordGateway>();
+			serviceCollection.AddSingleton<IHostedService>(sp => sp.GetRequiredService<DiscordGateway>());
+
 			serviceCollection.AddSingleton<DiscordChannelResolver>();
 
 			// Behind its interface so a /link slash command can be added later as a second provider without
