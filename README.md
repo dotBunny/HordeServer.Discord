@@ -1,6 +1,6 @@
 # HordeServer.Discord
 
-Send [Horde](https://dev.epicgames.com/documentation/en-us/unreal-engine/horde) build notifications to
+Send [Horde](https://dev.epicgames.com/documentation/unreal-engine/horde-in-unreal-engine) build notifications to
 Discord.
 
 Horde is Epic's build automation server. This plugin delivers its notifications — job and step
