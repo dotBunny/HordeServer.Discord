@@ -3,6 +3,8 @@
 using System.Net;
 using System.Text.Json;
 using EpicGames.Horde.Agents;
+using EpicGames.Horde.Jobs;
+using EpicGames.Horde.Logs;
 using EpicGames.Horde.Users;
 using HordeServer.Agents;
 using HordeServer.Configuration;
@@ -10,6 +12,7 @@ using HordeServer.Devices;
 using HordeServer.Discord.Client;
 using HordeServer.Discord.Notifications;
 using HordeServer.Discord.Tests.Client;
+using HordeServer.Notifications;
 using HordeServer.Plugins;
 using HordeServer.Users;
 using HordeTestDoubles;
@@ -38,6 +41,7 @@ namespace HordeServer.Discord.Tests.Notifications
 		const string DeviceChannel = "100000000000000003";
 		const string UpdateStreamsChannel = "100000000000000004";
 		const string WorkflowChannel = "100000000000000005";
+		const string JobChannel = "100000000000000006";
 		const string GuildId = "100000000000000009";
 
 		const string WorkflowSlackId = "C0832ESJUR5";
@@ -512,6 +516,204 @@ namespace HordeServer.Discord.Tests.Notifications
 
 		#endregion
 
+		#region Jobs and steps
+
+		[TestMethod]
+		public async Task AJobCompletionIsAnnouncedToTheChannelTheJobNames()
+		{
+			Harness harness = new Harness();
+
+			await harness.Processor.NotifyJobCompleteAsync(
+				new FakeJob { NotificationChannel = WorkflowSlackId },
+				LabelOutcome.Failure,
+				default);
+
+			Assert.AreEqual(1, harness.Handler.Requests.Count);
+			StringAssert.Contains(harness.Handler.Requests[0].Uri, $"channels/{WorkflowChannel}/messages");
+			Assert.AreEqual("Failed", harness.Handler.Field(0, "Outcome"));
+			Assert.AreEqual("dethol-main", harness.Handler.Field(0, "Stream"));
+		}
+
+		[TestMethod]
+		public async Task AnOutcomeFilterIsHonoured()
+		{
+			Harness harness = new Harness();
+
+			await harness.Processor.NotifyJobCompleteAsync(
+				new FakeJob { NotificationChannel = WorkflowSlackId, NotificationChannelFilter = "Failure" },
+				LabelOutcome.Success,
+				default);
+
+			Assert.AreEqual(0, harness.Handler.Requests.Count,
+				"An outcome filter that excluded this is a decision, not a gap - falling through to the Discord "
+				+ "override would post the very outcomes somebody asked not to hear about.");
+		}
+
+		[TestMethod]
+		public async Task AJobWithNoChannelAtAllUsesTheDiscordOverride()
+		{
+			Harness harness = new Harness();
+
+			await harness.Processor.NotifyJobCompleteAsync(new FakeJob(), LabelOutcome.Failure, default);
+
+			Assert.AreEqual(1, harness.Handler.Requests.Count);
+			StringAssert.Contains(harness.Handler.Requests[0].Uri, $"channels/{JobChannel}/messages",
+				"A fresh install with only the Discord channel filled in should not be silent, even though Horde "
+				+ "itself would send nothing.");
+		}
+
+		[TestMethod]
+		public async Task ThePersonWhoAbortedAJobIsNotToldItStopped()
+		{
+			Harness harness = new Harness();
+			IUser ada = HordeFakes.User("Ada Lovelace", AdaEmail);
+
+			await harness.Processor.NotifyJobCompleteToUserAsync(
+				ada,
+				new FakeJob { AbortedByUserId = ada.Id },
+				LabelOutcome.Failure,
+				default);
+
+			Assert.AreEqual(0, harness.Handler.Requests.Count, "They pressed the button; they know.");
+		}
+
+		[TestMethod]
+		public async Task ASubscribedJobCompletionIsADirectMessage()
+		{
+			Harness harness = Reachable();
+
+			await harness.Processor.NotifyJobCompleteToUserAsync(
+				HordeFakes.User("Ada Lovelace", AdaEmail),
+				new FakeJob(),
+				LabelOutcome.Failure,
+				default);
+
+			Assert.AreEqual(2, harness.Handler.Requests.Count);
+			StringAssert.Contains(harness.Handler.Requests[1].Uri, $"channels/{DmChannel}/messages");
+		}
+
+		[TestMethod]
+		public async Task AStepWithNobodySubscribedIsNotAnnounced()
+		{
+			Harness harness = new Harness();
+
+			await harness.Processor.NotifyJobStepCompleteAsync(
+				new FakeJob(),
+				new FakeJobStep(),
+				new FakeNode("Compile Win64"),
+				[],
+				null,
+				default);
+
+			Assert.AreEqual(0, harness.Handler.Requests.Count,
+				"These are subscription notifications. Broadcasting one per subscriber to a shared channel is what "
+				+ "makes a job channel unusable, and with no subscribers there is nobody it was for.");
+		}
+
+		[TestMethod]
+		public async Task ATimedOutStepReachesTheChannelWithNobodySubscribed()
+		{
+			Harness harness = new Harness();
+
+			await harness.Processor.NotifyJobStepCompleteAsync(
+				new FakeJob(),
+				new FakeJobStep { Error = JobStepError.TimedOut },
+				new FakeNode("Cook Content"),
+				[],
+				null,
+				default);
+
+			Assert.AreEqual(1, harness.Handler.Requests.Count,
+				"A step hitting its time limit is a farm problem rather than a subscriber's. Slack checks for "
+				+ "subscribers first and so misses this, which reads as an ordering accident.");
+			StringAssert.Contains(harness.Handler.Requests[0].Uri, $"channels/{JobChannel}/messages");
+			Assert.AreEqual("Timed out", harness.Handler.Field(0, "Outcome"));
+		}
+
+		[TestMethod]
+		public async Task AFailingStepQuotesItsWorstLogEvents()
+		{
+			Harness harness = new Harness();
+
+			await harness.Processor.NotifyJobStepCompleteAsync(
+				new FakeJob(),
+				new FakeJobStep(),
+				new FakeNode("Compile Win64"),
+				[
+					new FakeLogEventData(LogEventSeverity.Information, "Building 4212 actions"),
+					new FakeLogEventData(LogEventSeverity.Error, "error C2065: undeclared identifier"),
+					new FakeLogEventData(LogEventSeverity.Warning, "warning: deprecated module"),
+				],
+				[HordeFakes.User("Ada Lovelace", AdaEmail)],
+				default);
+
+			string events = harness.Handler.Field(0, "Events (2)")!;
+
+			StringAssert.Contains(events, "error C2065");
+			Assert.IsFalse(events.Contains("4212 actions", StringComparison.Ordinal),
+				"Information-level events are noise; whoever is reading this wants the reason it went red.");
+		}
+
+		[TestMethod]
+		public async Task AnAbortedStepSaysWhy()
+		{
+			Harness harness = new Harness();
+
+			await harness.Processor.NotifyJobStepAbortedAsync(
+				new FakeJob(),
+				new FakeJobStep { CancellationReason = "Superseded by CL 12346" },
+				new FakeNode("Package Build"),
+				[],
+				[HordeFakes.User("Ada Lovelace", AdaEmail)],
+				default);
+
+			Assert.AreEqual("Superseded by CL 12346", harness.Handler.Field(0, "Outcome"));
+			Assert.AreEqual(DiscordNotificationProcessor.NeutralColor, harness.Handler.Embed(0).GetProperty("color").GetInt32(),
+				"Somebody chose this, so it is not a failure.");
+		}
+
+		[TestMethod]
+		public async Task ALabelListsOnlyTheStepsThatWentWrong()
+		{
+			Harness harness = new Harness();
+
+			await harness.Processor.NotifyLabelCompleteAsync(
+				new FakeJob(),
+				new FakeLabel(),
+				LabelOutcome.Failure,
+				[
+					("Compile Win64", JobStepOutcome.Failure, new Uri("https://horde.example.com/job/1?step=a")),
+					("Compile Linux", JobStepOutcome.Success, new Uri("https://horde.example.com/job/1?step=b")),
+				],
+				HordeFakes.User("Ada Lovelace", AdaEmail),
+				default);
+
+			string steps = harness.Handler.Field(0, "Steps (1)")!;
+
+			StringAssert.Contains(steps, "Compile Win64");
+			Assert.IsFalse(steps.Contains("Compile Linux", StringComparison.Ordinal),
+				"On a healthy label that is none of them, and the embed stays a one-liner.");
+		}
+
+		[TestMethod]
+		public async Task WaitingJobsAreGroupedByThePoolTheyAreWaitingOn()
+		{
+			Harness harness = new Harness();
+
+			await harness.Processor.NotifyJobScheduledAsync(
+				[
+					new JobScheduledNotification("65f0000000000000000000a1", "Nightly Cook", "win-cook"),
+					new JobScheduledNotification("65f0000000000000000000a2", "Nightly Build", "win-cook"),
+					new JobScheduledNotification("65f0000000000000000000a3", "Linux Build", "linux-build"),
+				],
+				default);
+
+			CollectionAssert.AreEquivalent(new[] { "win-cook (2)", "linux-build (1)" }, harness.Handler.FieldNames(0).ToList(),
+				"Jobs pile up when one pool has no agents, and a flat list of twenty job names buries which pool it is.");
+		}
+
+		#endregion
+
 		#region Mentions
 
 		[TestMethod]
@@ -848,6 +1050,7 @@ namespace HordeServer.Discord.Tests.Notifications
 				{
 					BotToken = botToken,
 					ConfigNotificationChannel = ConfigChannel,
+					JobNotificationChannel = JobChannel,
 					AgentNotificationChannel = agentChannel,
 					DeviceNotificationChannel = DeviceChannel,
 					UpdateStreamsNotificationChannel = UpdateStreamsChannel,

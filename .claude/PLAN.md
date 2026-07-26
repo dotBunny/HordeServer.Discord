@@ -481,6 +481,11 @@ HordeServer.Discord/                         (this repo)
 │                                            ServerApp.CreatePluginCollection without Mongo/Redis.
 │                                            Now a shared library with a console front end; the
 │                                            tests run the same Probe.Run and assert on its result
+├─ tools/DiscordSmoke/                    ✅ posts one of every notification to a real channel, so the
+│                                            formatting can be *looked at*. Drives the real processor
+│                                            with stand-in data; no Horde server, Mongo or Redis.
+│                                            Credentials from Horde.local.props, baked into this
+│                                            assembly and no other
 ├─ tools/HordeTestDoubles/                ✅ stand-ins for the Horde types a notification arrives
 │                                            with. Its own assembly because MSTest resolves the base
 │                                            types of everything the *test* assembly declares during

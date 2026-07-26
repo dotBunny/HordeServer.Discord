@@ -1,0 +1,83 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>DiscordSmoke</RootNamespace>
+    <AssemblyName>DiscordSmoke</AssemblyName>
+    <!--
+      Deliberately NOT named HordeServer.* - that pattern is what the server's plugin scan matches, and nothing in
+      tools/ should ever be mistaken for a plugin if it is copied next to the server binaries.
+    -->
+    <IsPackable>false</IsPackable>
+    <!--
+      A console tool whose types nobody consumes as an API, and whose scenarios document themselves by what they
+      print. Same reasoning as HordeTestDoubles.
+    -->
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <!--
+    The credentials from Horde.local.props, baked into *this* assembly and no other. bin/ is git-ignored, so a
+    token never leaves the machine - but this is also why these properties are set nowhere else in the build.
+    Every one is overridable at runtime by the environment variable of the same name in upper snake case.
+  -->
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>DiscordBotToken</_Parameter1>
+      <_Parameter2>$(DiscordBotToken)</_Parameter2>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>DiscordGuildId</_Parameter1>
+      <_Parameter2>$(DiscordGuildId)</_Parameter2>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>DiscordTestChannelId</_Parameter1>
+      <_Parameter2>$(DiscordTestChannelId)</_Parameter2>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>DiscordTestUserId</_Parameter1>
+      <_Parameter2>$(DiscordTestUserId)</_Parameter2>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>DiscordDashboardUrl</_Parameter1>
+      <_Parameter2>$(DiscordDashboardUrl)</_Parameter2>
+    </AssemblyAttribute>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\HordeServer.Discord\HordeServer.Discord.csproj" />
+    <ProjectReference Include="..\HordeTestDoubles\HordeTestDoubles.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <!--
+    Restated rather than inherited: a <Reference> does not flow through a <ProjectReference>. Private=false as
+    everywhere else - see .claude/PLAN.md section 3.1.
+  -->
+  <ItemGroup>
+    <Reference Include="HordeServer.Build">
+      <HintPath>$(HordeBinDir)\HordeServer.Build.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="HordeServer.Shared">
+      <HintPath>$(HordeBinDir)\HordeServer.Shared.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="HordeServer.Compute">
+      <HintPath>$(HordeBinDir)\HordeServer.Compute.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="EpicGames.Horde">
+      <HintPath>$(HordeBinDir)\EpicGames.Horde.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="EpicGames.Core">
+      <HintPath>$(HordeBinDir)\EpicGames.Core.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+</Project>

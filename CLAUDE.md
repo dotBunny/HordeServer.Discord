@@ -106,15 +106,36 @@ dotnet run --project tools/PluginProbe -c Development
 Both take the server directory from the build-time `$(HordeBinDir)` or `HORDE_BIN_DIR` (the probe also
 accepts argv[0]), so on a configured machine neither needs arguments.
 
-Two naming notes. Nothing under `tools/` is named `HordeServer.*` — neither `PluginProbe` nor
-`HordeTestDoubles` — so neither can ever be mistaken for a plugin. `HordeServer.Discord.Tests.dll`
-*does* match that pattern, exactly as Epic's own test assemblies do — harmless because it is never
-deployed, but never copy it beside the server.
+### Verifying the messages themselves
 
-`tools/HordeTestDoubles` is the one project with `GenerateDocumentationFile` off. Everything in it
-exists to satisfy an engine interface member for member and most of it returns a constant or throws;
-`PluginProbe` keeps documentation on for the opposite reason, since someone reading a red test ends up
-in its types.
+`dotnet test` proves what the plugin *would* send. It proves nothing about what Discord does with it.
+`tools/DiscordSmoke` closes that gap: it posts one of every notification to a real channel, driving the
+real `DiscordNotificationProcessor` with stand-in Horde data. **No Horde server, MongoDB or Redis.**
+
+```bash
+dotnet run --project tools/DiscordSmoke -c Development                 # all scenarios
+dotnet run --project tools/DiscordSmoke -c Development -- step label   # just those
+dotnet run --project tools/DiscordSmoke -c Development -- --help       # list them
+```
+
+Credentials come from `Horde.local.props` (git-ignored, same file as `HordeBinDir`) or the `DISCORD_*`
+environment variables; unconfigured, the tool prints what is missing and exits 1. They are baked into
+that tool's assembly and nothing else, so **rebuild after editing them**. Never print the bot token —
+`SmokeSettings.Describe` deliberately omits it, and every diagnostic goes through it.
+
+The scenario data is deliberately awkward: names containing markdown, a compile error long enough to
+truncate, more failing steps than fit in an embed. That is the point — clean data would not tell you
+anything you did not already know from the unit tests.
+
+Two naming notes. Nothing under `tools/` is named `HordeServer.*` — not `PluginProbe`,
+`HordeTestDoubles` or `DiscordSmoke` — so none can ever be mistaken for a plugin.
+`HordeServer.Discord.Tests.dll` *does* match that pattern, exactly as Epic's own test assemblies do —
+harmless because it is never deployed, but never copy it beside the server.
+
+`tools/HordeTestDoubles` and `tools/DiscordSmoke` are the two projects with `GenerateDocumentationFile`
+off — the first is engine interfaces satisfied member for member, the second a console tool whose
+scenarios document themselves by what they print. `PluginProbe` keeps documentation on for the opposite
+reason, since someone reading a red test ends up in its types.
 
 ## Architecture
 

@@ -19,4 +19,37 @@
     <HordeBinDir>D:\Workspaces\dotBunny\DETHOL\Engine\Source\Programs\Horde\HordeServer\bin\Development\net10.0</HordeBinDir>
   </PropertyGroup>
 
+  <!--
+    Credentials for the smoke tool (tools/DiscordSmoke), which posts one of every notification this plugin
+    produces to a real Discord channel. Optional - leave these unset and everything except that tool still
+    builds and runs.
+
+      dotnet run --project tools/DiscordSmoke -c Development
+
+    This file is git-ignored, which is the only reason it is a safe place for a bot token. The values are
+    baked into the smoke tool's own assembly at build time and into nothing else, so they never reach the
+    plugin, the tests, or anything you would deploy. Each can also be supplied as the environment variable
+    named beside it, which is what CI would do.
+
+    To find the ids: turn on Discord's Settings > Advanced > Developer Mode, then right-click a server,
+    channel or person and choose "Copy ... ID".
+  -->
+  <PropertyGroup>
+    <!-- DISCORD_BOT_TOKEN - from your application's Bot page. Treat it like a password. -->
+    <DiscordBotToken></DiscordBotToken>
+
+    <!-- DISCORD_GUILD_ID - the server the bot has been invited to. -->
+    <DiscordGuildId></DiscordGuildId>
+
+    <!-- DISCORD_TEST_CHANNEL_ID - where the smoke tool posts. Use a channel you do not mind filling up. -->
+    <DiscordTestChannelId></DiscordTestChannelId>
+
+    <!-- DISCORD_TEST_USER_ID - your own Discord user id, so direct messages and mentions can be checked.
+         Optional; without it those scenarios are skipped. You must share the server with the bot. -->
+    <DiscordTestUserId></DiscordTestUserId>
+
+    <!-- DISCORD_DASHBOARD_URL - used to build the links in each message. Any URL will do. -->
+    <DiscordDashboardUrl>https://horde.example.com/</DiscordDashboardUrl>
+  </PropertyGroup>
+
 </Project>

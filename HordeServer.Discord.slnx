@@ -25,4 +25,10 @@
   -->
   <Project Path="tools/HordeTestDoubles/HordeTestDoubles.csproj" />
 
+  <!--
+    Posts one of every notification to a real Discord channel, so the formatting can be looked at. Needs
+    credentials in Horde.local.props; without them it prints what is missing and exits.
+  -->
+  <Project Path="tools/DiscordSmoke/DiscordSmoke.csproj" />
+
 </Solution>

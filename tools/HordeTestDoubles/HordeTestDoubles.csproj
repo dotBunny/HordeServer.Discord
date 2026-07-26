@@ -36,6 +36,11 @@
       <HintPath>$(HordeBinDir)\HordeServer.Build.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <!-- ILogEventData, which reaches INotificationSink through the job-step members. -->
+    <Reference Include="HordeServer.Compute">
+      <HintPath>$(HordeBinDir)\HordeServer.Compute.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
     <Reference Include="EpicGames.Horde">
       <HintPath>$(HordeBinDir)\EpicGames.Horde.dll</HintPath>
       <Private>false</Private>

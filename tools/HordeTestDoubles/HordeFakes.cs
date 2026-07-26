@@ -106,7 +106,7 @@ namespace HordeTestDoubles
 	/// </summary>
 	public sealed class FakeServerInfo : IServerInfo
 	{
-		public Uri DashboardUrl { get; } = new Uri("https://horde.example.com/");
+		public Uri DashboardUrl { get; set; } = new Uri("https://horde.example.com/");
 
 		public SemVer Version => throw new NotSupportedException();
 

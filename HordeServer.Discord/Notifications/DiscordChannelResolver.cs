@@ -162,6 +162,11 @@ namespace HordeServer.Discord.Notifications
 		{
 			List<string> channels = new List<string>();
 
+			// Tracked separately from the channels themselves, because "nobody said where this goes" and "somebody
+			// said this outcome is not worth sending" both leave the list empty and must not be treated alike.
+			bool configured = !String.IsNullOrWhiteSpace(job.NotificationChannel)
+				|| !String.IsNullOrWhiteSpace(streamConfig?.NotificationChannel);
+
 			if (PassesFilter(job.NotificationChannelFilter, outcome, job.NotificationChannel))
 			{
 				channels.AddRange(DiscordChannelIds.Split(job.NotificationChannel));
@@ -175,6 +180,13 @@ namespace HordeServer.Discord.Notifications
 			if (channels.Count > 0)
 			{
 				return ResolveAll(channels);
+			}
+
+			// An outcome filter that excluded this notification is a decision, not a gap. Falling through to the
+			// override here would post the very outcomes somebody asked not to hear about.
+			if (configured)
+			{
+				return Array.Empty<DiscordDestination>();
 			}
 
 			IReadOnlyList<string> overrides = DiscordChannelIds.Split(_serverConfig.JobNotificationChannel);
