@@ -193,6 +193,99 @@ namespace HordeServer.Discord.Tests.Notifications
 			Assert.AreEqual("PATCH", harness.Handler.Requests[1].Method);
 		}
 
+		#region Modals
+
+		[TestMethod]
+		public async Task AModalOpeningVerbIsNotPreAcknowledged()
+		{
+			Harness harness = new Harness();
+
+			harness.Router.Register(
+				DiscordCustomId.IssueScope,
+				async (context, cancellationToken) => await harness.Router.RespondAsync(
+					context,
+					DiscordInteractionResponse.OpenModal(new DiscordModalBuilder(context.CustomId.ToString(), "Mark Fixed")
+						.AddTextInput("fix_cl", "Fix CL", required: true)
+						.Build()),
+					cancellationToken),
+				customId => customId.Verb == "markfixed");
+
+			await harness.Router.HandleAsync(Interaction("issue_abc_markfixed"), default);
+
+			Assert.AreEqual(1, harness.Handler.Requests.Count,
+				"Exactly one response. A deferral followed by the modal would be two, and Discord refuses to attach "
+				+ "a dialog to an interaction that has already been answered.");
+
+			Assert.AreEqual(DiscordInteractionCallbackType.Modal, harness.Handler.Message(0).GetProperty("type").GetInt32());
+		}
+
+		[TestMethod]
+		public async Task OtherVerbsInTheSameScopeAreStillPreAcknowledged()
+		{
+			Harness harness = new Harness();
+
+			harness.Router.Register(
+				DiscordCustomId.IssueScope,
+				(_, _) => Task.CompletedTask,
+				customId => customId.Verb == "markfixed");
+
+			await harness.Router.HandleAsync(Interaction("issue_abc_ack"), default);
+
+			Assert.AreEqual(DiscordInteractionCallbackType.DeferredUpdateMessage,
+				harness.Handler.Message(0).GetProperty("type").GetInt32(),
+				"The exemption is per verb, not per scope - only the one that opens a dialog gives up its deferral.");
+		}
+
+		[TestMethod]
+		public async Task ASubmittedModalIsRoutedLikeAButton()
+		{
+			Harness harness = new Harness();
+
+			IReadOnlyDictionary<string, string>? values = null;
+
+			harness.Router.Register(DiscordCustomId.IssueScope, (context, _) =>
+			{
+				values = context.Interaction.GetModalValues();
+				return Task.CompletedTask;
+			});
+
+			DiscordInteraction submission = Interaction("issue_abc_markfixed");
+			submission.Type = DiscordInteractionType.ModalSubmit;
+			submission.Data!.Components = JsonDocument.Parse("""
+				[{"type":1,"components":[{"type":4,"custom_id":"fix_cl","value":"12345"}]}]
+				""").RootElement.Clone();
+
+			await harness.Router.HandleAsync(submission, default);
+
+			Assert.IsNotNull(values);
+			Assert.AreEqual("12345", values!["fix_cl"]);
+		}
+
+		[TestMethod]
+		public async Task ASubmittedModalIsAcknowledgedBeforeTheFixIsApplied()
+		{
+			Harness harness = new Harness();
+
+			int requestsWhenHandlerRan = -1;
+
+			harness.Router.Register(DiscordCustomId.IssueScope, (_, _) =>
+			{
+				requestsWhenHandlerRan = harness.Handler.Requests.Count;
+				return Task.CompletedTask;
+			});
+
+			DiscordInteraction submission = Interaction("issue_abc_markfixed");
+			submission.Type = DiscordInteractionType.ModalSubmit;
+
+			await harness.Router.HandleAsync(submission, default);
+
+			Assert.AreEqual(1, requestsWhenHandlerRan,
+				"Applying the fix is database work behind a service call, and the submission has the same three "
+				+ "seconds a button press does.");
+		}
+
+		#endregion
+
 		static DiscordInteraction Interaction(string customId)
 			=> new DiscordInteraction
 			{

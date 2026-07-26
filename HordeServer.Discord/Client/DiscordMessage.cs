@@ -32,6 +32,26 @@ namespace HordeServer.Discord.Client
 		/// </remarks>
 		[JsonPropertyName("components")]
 		public List<DiscordComponent>? Components { get; set; }
+
+		/// <summary>Bit flags. See <see cref="DiscordMessageFlags"/>.</summary>
+		[JsonPropertyName("flags")]
+		public int? Flags { get; set; }
+	}
+
+	/// <summary>
+	/// Message flags, as a bit field.
+	/// </summary>
+	public static class DiscordMessageFlags
+	{
+		/// <summary>
+		/// Visible only to the person whose interaction produced it.
+		/// </summary>
+		/// <remarks>
+		/// Only meaningful on an interaction response - an ordinary post has nobody to be ephemeral to. Discord
+		/// keeps no lasting record of one, so it cannot be edited later by message id and never appears in channel
+		/// history.
+		/// </remarks>
+		public const int Ephemeral = 1 << 6;
 	}
 
 	/// <summary>

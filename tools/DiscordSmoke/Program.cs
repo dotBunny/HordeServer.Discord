@@ -92,6 +92,11 @@ namespace DiscordSmoke
 				return await RunInteractAsync(settings, HoldSeconds(args, 120));
 			}
 
+			if (args.Contains("--modal"))
+			{
+				return await RunModalAsync(settings, HoldSeconds(args, 180));
+			}
+
 			IReadOnlyList<Scenario> all = Scenarios.All(settings);
 			IReadOnlyList<Scenario> chosen = Choose(all, args, out string? unknown);
 
@@ -332,6 +337,170 @@ namespace DiscordSmoke
 
 			return presses > 0 ? 0 : 1;
 		}
+
+		/// <summary>
+		/// Drives the whole hybrid Mark Fixed flow against a real Discord client.
+		/// </summary>
+		/// <remarks>
+		/// Button → modal → conditional ephemeral dropdown, which is the design in <c>.claude/PLAN.md</c> section
+		/// 3.3.4 and the part of Phase 4 with the most ways to be subtly wrong. Two of them only show up here: a
+		/// modal that is opened after a deferral is refused by Discord, and an ephemeral followup posted against a
+		/// stale token vanishes without an error anyone sees.
+		///
+		/// Type something into "Root cause summary" to get the category dropdown; leave it blank to take the common
+		/// path, which is the one this flow is shaped around.
+		/// </remarks>
+		static async Task<int> RunModalAsync(SmokeSettings settings, int holdSeconds)
+		{
+			using ILoggerFactory loggerFactory = LoggerFactory.Create(builder => builder
+				.AddSimpleConsole(options => options.SingleLine = true)
+				.SetMinimumLevel(LogLevel.Information));
+
+			IOptions<DiscordServerConfig> serverConfig = Options.Create(ServerConfig(settings));
+
+			using DiscordClient client = CreateClient(settings, loggerFactory);
+			using DiscordGateway gateway = new DiscordGateway(serverConfig, client, loggerFactory.CreateLogger<DiscordGateway>());
+
+			DiscordInteractionRouter router = new DiscordInteractionRouter(
+				gateway, client, serverConfig, loggerFactory.CreateLogger<DiscordInteractionRouter>());
+
+			int completed = 0;
+
+			router.Register(
+				DiscordCustomId.IssueScope,
+				async (context, cancellationToken) =>
+				{
+					switch (context.CustomId.Verb)
+					{
+						case "markfixed":
+							// Unacknowledged, because a modal can only ever be the first answer.
+							Console.WriteLine("  button pressed: opening the modal");
+
+							await router.RespondAsync(context, DiscordInteractionResponse.OpenModal(
+								new DiscordModalBuilder(new DiscordCustomId(DiscordCustomId.IssueScope, context.CustomId.Id, "fixsubmit").ToString(), "Mark Fixed")
+									.AddTextInput("fix_cl", "Fix CL", required: true, placeholder: "12345")
+									.AddTextInput("rootcause_summary", "Root cause summary", paragraph: true, placeholder: "Fill this in to get the category dropdown")
+									.AddTextInput("rootcause_cl", "Root cause CL")
+									.AddTextInput("rootcause_dupeid", "Duplicate issue id")
+									.Build()),
+								cancellationToken);
+							break;
+
+						case "fixsubmit":
+							// Already acknowledged by the router, so applying the fix could take as long as it likes.
+							IReadOnlyDictionary<string, string> values = context.Interaction.GetModalValues();
+							string summary = values.GetValueOrDefault("rootcause_summary", String.Empty);
+
+							Console.WriteLine($"  modal submitted: fix_cl='{values.GetValueOrDefault("fix_cl")}', "
+								+ $"summary={(String.IsNullOrWhiteSpace(summary) ? "<blank>" : "given")}");
+
+							await router.UpdateMessageAsync(
+								context,
+								new DiscordMessageBuilder()
+									.AddEmbed(new DiscordEmbedBuilder()
+										.WithTitle("Marked fixed")
+										.WithColor(0x57F287)
+										.AddField("Fix CL", values.GetValueOrDefault("fix_cl", "<none>"), true)
+										.AddField("Marked by", $"<@{context.DiscordUserId}>", true))
+									.WithoutComponents()
+									.Build(),
+								cancellationToken);
+
+							if (String.IsNullOrWhiteSpace(summary))
+							{
+								// The common path: closing out a fix stayed a single interaction.
+								completed++;
+								Console.WriteLine("  no root cause summary, so no category asked for - flow complete");
+								break;
+							}
+
+							Console.WriteLine("  root cause summary given, asking for a category");
+
+							await router.FollowUpAsync(
+								context,
+								new DiscordMessageBuilder()
+									.WithContent("One more thing - what kind of root cause was it?")
+									.WithComponents(new DiscordComponentBuilder().AddSelect(
+										new DiscordCustomId(DiscordCustomId.IssueScope, context.CustomId.Id, "category").ToString(),
+										RootCauseCategories(),
+										"Pick a category"))
+									.Build(),
+								ephemeral: true,
+								cancellationToken);
+							break;
+
+						case "category":
+							string chosen = context.Interaction.Data?.Values?.FirstOrDefault() ?? "<none>";
+							completed++;
+
+							Console.WriteLine($"  category chosen: {chosen} - flow complete");
+
+							await router.UpdateMessageAsync(
+								context,
+								new DiscordMessageBuilder().WithContent($"Recorded root cause: **{chosen}**").WithoutComponents().Build(),
+								cancellationToken);
+							break;
+
+						default:
+							Console.WriteLine($"  unexpected verb '{context.CustomId.Verb}'");
+							break;
+					}
+				},
+				// Only the modal-opening verb gives up its deferral.
+				customId => customId.Verb == "markfixed");
+
+			DiscordMessage message = new DiscordMessageBuilder()
+				.AddEmbed(new DiscordEmbedBuilder()
+					.WithTitle("🔴 Compile Win64")
+					.WithDescription("Press **Mark Fixed** to open the modal. Fill in the root cause summary to be "
+						+ "asked for a category afterwards, or leave it blank for the common path.")
+					.WithColor(0xED4245))
+				.WithComponents(new DiscordComponentBuilder().AddButton(
+					new DiscordCustomId(DiscordCustomId.IssueScope, "smoke", "markfixed").ToString(),
+					"Mark Fixed",
+					DiscordButtonStyle.Primary))
+				.Build();
+
+			if (await client.CreateMessageAsync(settings.ChannelId, message, CancellationToken.None) == null)
+			{
+				Console.Error.WriteLine("The message could not be posted; nothing to press.");
+				return 1;
+			}
+
+			Console.WriteLine($"Posted a Mark Fixed button to channel {settings.ChannelId}.");
+			Console.WriteLine($"Go and use it - waiting {holdSeconds}s.");
+			Console.WriteLine();
+
+			using CancellationTokenSource stopping = new CancellationTokenSource();
+			Task running = gateway.RunAsync(stopping.Token);
+
+			await router.StartAsync(CancellationToken.None);
+
+			DateTime deadline = DateTime.UtcNow.AddSeconds(holdSeconds);
+
+			while (DateTime.UtcNow < deadline && !running.IsCompleted && completed == 0)
+			{
+				await Task.Delay(TimeSpan.FromMilliseconds(250.0));
+			}
+
+			await router.StopAsync(CancellationToken.None);
+			await stopping.CancelAsync();
+			await running;
+
+			Console.WriteLine();
+			Console.WriteLine(completed > 0
+				? "The hybrid flow round-tripped end to end."
+				: "The flow was not completed, so it is still unproven. Re-run and press Mark Fixed.");
+
+			return completed > 0 ? 0 : 1;
+		}
+
+		/// <summary>
+		/// Stand-ins for Horde's root cause vocabulary, which is twelve options in the Slack view.
+		/// </summary>
+		static List<DiscordSelectOption> RootCauseCategories()
+			=> [.. new[] { "Code", "Content", "Configuration", "Infrastructure", "Flaky test", "Unknown" }
+				.Select(x => new DiscordSelectOption { Label = x, Value = x.ToLowerInvariant().Replace(' ', '-') })];
 
 		/// <summary>
 		/// How long a holding mode should wait, from the first number on the command line.

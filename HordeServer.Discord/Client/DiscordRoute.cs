@@ -75,5 +75,12 @@ namespace HordeServer.Discord.Client
 		/// </remarks>
 		public static DiscordRoute InteractionResponse()
 			=> new DiscordRoute("PATCH /webhooks/:id/:token/messages/@original", true);
+
+		/// <summary>
+		/// Posting an additional message against an interaction already answered.
+		/// </summary>
+		/// <remarks>Exempt for the same reason as the other two.</remarks>
+		public static DiscordRoute InteractionFollowup()
+			=> new DiscordRoute("POST /webhooks/:id/:token", true);
 	}
 }

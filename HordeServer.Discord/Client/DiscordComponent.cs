@@ -71,6 +71,63 @@ namespace HordeServer.Discord.Client
 
 		/// <summary>Maximum characters in a custom id.</summary>
 		public const int CustomId = 100;
+
+		/// <summary>Maximum options in one select menu.</summary>
+		public const int SelectOptions = 25;
+
+		/// <summary>Maximum characters in a select option's label.</summary>
+		public const int SelectOptionLabel = 100;
+
+		/// <summary>Maximum characters in a select menu's placeholder.</summary>
+		public const int SelectPlaceholder = 150;
+
+		/// <summary>Maximum characters in a text input's label.</summary>
+		/// <remarks>Notably shorter than an embed's - 45, not 256. Long field names have to be abbreviated.</remarks>
+		public const int TextInputLabel = 45;
+
+		/// <summary>Maximum characters a text input will accept.</summary>
+		public const int TextInputValue = 4000;
+
+		/// <summary>Maximum text inputs in one modal.</summary>
+		/// <remarks>
+		/// The number that forced the hybrid Mark Fixed flow. Slack's equivalent view presents seven inputs, three of
+		/// them non-text. See <c>.claude/PLAN.md</c> section 3.3.4.
+		/// </remarks>
+		public const int TextInputsPerModal = 5;
+	}
+
+	/// <summary>
+	/// Text input styles.
+	/// </summary>
+	public static class DiscordTextInputStyle
+	{
+		/// <summary>A single line.</summary>
+		public const int Short = 1;
+
+		/// <summary>A resizable box.</summary>
+		public const int Paragraph = 2;
+	}
+
+	/// <summary>
+	/// One choice in a select menu.
+	/// </summary>
+	public sealed class DiscordSelectOption
+	{
+		/// <summary>What the reader sees.</summary>
+		[JsonPropertyName("label")]
+		public string? Label { get; set; }
+
+		/// <summary>What comes back when it is chosen.</summary>
+		[JsonPropertyName("value")]
+		public string? Value { get; set; }
+
+		/// <summary>Smaller text beneath the label.</summary>
+		[JsonPropertyName("description")]
+		public string? Description { get; set; }
+
+		/// <summary>Whether it starts selected.</summary>
+		[JsonPropertyName("default")]
+		public bool? Default { get; set; }
 	}
 
 	/// <summary>
@@ -111,6 +168,34 @@ namespace HordeServer.Discord.Client
 		/// <summary>Whether the component is greyed out and unusable.</summary>
 		[JsonPropertyName("disabled")]
 		public bool? Disabled { get; set; }
+
+		/// <summary>Choices, for a select menu.</summary>
+		[JsonPropertyName("options")]
+		public List<DiscordSelectOption>? Options { get; set; }
+
+		/// <summary>Greyed-out prompt shown before anything is chosen or typed.</summary>
+		[JsonPropertyName("placeholder")]
+		public string? Placeholder { get; set; }
+
+		/// <summary>Fewest choices a select menu will accept.</summary>
+		[JsonPropertyName("min_values")]
+		public int? MinValues { get; set; }
+
+		/// <summary>Most choices a select menu will accept.</summary>
+		[JsonPropertyName("max_values")]
+		public int? MaxValues { get; set; }
+
+		/// <summary>Whether a text input must be filled in before the modal can be submitted.</summary>
+		[JsonPropertyName("required")]
+		public bool? Required { get; set; }
+
+		/// <summary>Pre-filled contents of a text input.</summary>
+		[JsonPropertyName("value")]
+		public string? Value { get; set; }
+
+		/// <summary>Longest a text input will accept.</summary>
+		[JsonPropertyName("max_length")]
+		public int? MaxLength { get; set; }
 	}
 
 	/// <summary>
@@ -124,12 +209,13 @@ namespace HordeServer.Discord.Client
 	/// </remarks>
 	public sealed class DiscordComponentBuilder
 	{
-		readonly List<DiscordComponent> _buttons = new List<DiscordComponent>();
+		// Each entry is a component and whether it insists on a row to itself. Select menus do; buttons pack.
+		readonly List<(DiscordComponent Component, bool NeedsOwnRow)> _items = new List<(DiscordComponent, bool)>();
 
 		/// <summary>
 		/// Whether anything has been added.
 		/// </summary>
-		public bool IsEmpty => _buttons.Count == 0;
+		public bool IsEmpty => _items.Count == 0;
 
 		/// <summary>
 		/// Adds a button that produces an interaction when pressed.
@@ -143,29 +229,16 @@ namespace HordeServer.Discord.Client
 		/// <exception cref="ArgumentException">The custom id is empty or too long.</exception>
 		public DiscordComponentBuilder AddButton(string customId, string label, int style = DiscordButtonStyle.Secondary, bool disabled = false)
 		{
-			if (String.IsNullOrEmpty(customId))
-			{
-				throw new ArgumentException("A button needs a custom id, or it cannot be acted on.", nameof(customId));
-			}
+			RequireUsableCustomId(customId);
 
-			// Deliberately not truncated. Everything else here clamps to fit, but a custom id is the only thing
-			// identifying what was pressed: a shortened one comes back as a verb nothing recognises, which is a
-			// silent no-op rather than a visible error.
-			if (customId.Length > DiscordComponentLimits.CustomId)
-			{
-				throw new ArgumentException(
-					$"Custom id '{customId}' is {customId.Length} characters; Discord allows {DiscordComponentLimits.CustomId}.",
-					nameof(customId));
-			}
-
-			_buttons.Add(new DiscordComponent
+			_items.Add((new DiscordComponent
 			{
 				Type = DiscordComponentType.Button,
 				Style = style,
 				Label = DiscordEmbedLimits.Truncate(label, DiscordComponentLimits.ButtonLabel),
 				CustomId = customId,
 				Disabled = disabled ? true : null,
-			});
+			}, false));
 
 			return this;
 		}
@@ -182,13 +255,47 @@ namespace HordeServer.Discord.Client
 		/// <returns>This builder.</returns>
 		public DiscordComponentBuilder AddLink(string url, string label)
 		{
-			_buttons.Add(new DiscordComponent
+			_items.Add((new DiscordComponent
 			{
 				Type = DiscordComponentType.Button,
 				Style = DiscordButtonStyle.Link,
 				Label = DiscordEmbedLimits.Truncate(label, DiscordComponentLimits.ButtonLabel),
 				Url = url,
-			});
+			}, false));
+
+			return this;
+		}
+
+		/// <summary>
+		/// Adds a dropdown.
+		/// </summary>
+		/// <remarks>
+		/// This is the component that makes the hybrid Mark Fixed flow possible: a select menu is legal in a
+		/// *message* and illegal in a modal, so the root-cause category is asked for afterwards rather than
+		/// alongside. See <c>.claude/PLAN.md</c> section 3.3.4.
+		///
+		/// A select takes a whole action row, which is Discord's rule rather than a simplification here.
+		/// </remarks>
+		/// <param name="customId">Identifier echoed back with the chosen values.</param>
+		/// <param name="options">Choices. Anything past the twenty-fifth is dropped.</param>
+		/// <param name="placeholder">Prompt shown before anything is chosen.</param>
+		/// <returns>This builder.</returns>
+		/// <exception cref="ArgumentException">The custom id is empty or too long.</exception>
+		public DiscordComponentBuilder AddSelect(string customId, IEnumerable<DiscordSelectOption> options, string? placeholder = null)
+		{
+			RequireUsableCustomId(customId);
+
+			_items.Add((new DiscordComponent
+			{
+				Type = DiscordComponentType.StringSelect,
+				CustomId = customId,
+				Placeholder = placeholder == null
+					? null
+					: DiscordEmbedLimits.Truncate(placeholder, DiscordComponentLimits.SelectPlaceholder),
+				Options = [.. options.Take(DiscordComponentLimits.SelectOptions)],
+				MinValues = 1,
+				MaxValues = 1,
+			}, true));
 
 			return this;
 		}
@@ -199,16 +306,22 @@ namespace HordeServer.Discord.Client
 		/// <returns>The action rows, or null if there is nothing to show.</returns>
 		public List<DiscordComponent>? Build()
 		{
-			if (_buttons.Count == 0)
+			if (_items.Count == 0)
 			{
 				return null;
 			}
 
 			List<DiscordComponent> rows = new List<DiscordComponent>();
+			bool lastRowIsExclusive = false;
 
-			foreach (DiscordComponent button in _buttons)
+			foreach ((DiscordComponent component, bool needsOwnRow) in _items)
 			{
-				if (rows.Count == 0 || rows[^1].Components!.Count == DiscordComponentLimits.ButtonsPerRow)
+				bool needNewRow = rows.Count == 0
+					|| needsOwnRow
+					|| lastRowIsExclusive
+					|| rows[^1].Components!.Count == DiscordComponentLimits.ButtonsPerRow;
+
+				if (needNewRow)
 				{
 					if (rows.Count == DiscordComponentLimits.RowsPerMessage)
 					{
@@ -220,12 +333,37 @@ namespace HordeServer.Discord.Client
 						Type = DiscordComponentType.ActionRow,
 						Components = new List<DiscordComponent>(),
 					});
+
+					lastRowIsExclusive = needsOwnRow;
 				}
 
-				rows[^1].Components!.Add(button);
+				rows[^1].Components!.Add(component);
 			}
 
 			return rows;
+		}
+
+		/// <summary>
+		/// Rejects a custom id that could not survive the round trip.
+		/// </summary>
+		/// <remarks>
+		/// Deliberately not truncated, unlike every label here. A custom id is the only thing identifying what was
+		/// used: a shortened one comes back as a verb nothing recognises, which is a silent no-op rather than a
+		/// visible error.
+		/// </remarks>
+		static void RequireUsableCustomId(string customId)
+		{
+			if (String.IsNullOrEmpty(customId))
+			{
+				throw new ArgumentException("A component needs a custom id, or it cannot be acted on.", nameof(customId));
+			}
+
+			if (customId.Length > DiscordComponentLimits.CustomId)
+			{
+				throw new ArgumentException(
+					$"Custom id '{customId}' is {customId.Length} characters; Discord allows {DiscordComponentLimits.CustomId}.",
+					nameof(customId));
+			}
 		}
 	}
 }

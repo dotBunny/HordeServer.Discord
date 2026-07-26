@@ -376,6 +376,20 @@ non-resumable close codes, and reconnect backoff. Budget for it (§5, Phase 4).
    the controlled category vocabulary is only demanded of people actually doing root-cause analysis.
    Cost is one extra interaction handler and a short-lived (issue id → pending category) association,
    which can be encoded entirely in the component `custom_id` — no server-side state needed.
+
+   **Built and verified live, 2026-07-26.** The flow works as designed, and building it turned up one
+   thing the design did not anticipate: **a modal can only be the first answer to an interaction.**
+   Discord refuses to open one against an interaction that has already been answered, deferral
+   included — which is exactly what `DiscordInteractionRouter` does to everything to beat the
+   three-second deadline. The resolution is an `answersForItself` predicate on `Register`, per verb
+   rather than per scope, so `markfixed` runs unacknowledged and answers with the modal itself while
+   `ack` and the rest keep their deferral. It is affordable only because opening a modal is a single
+   request; anything slower in front of it would blow the deadline.
+
+   The follow-up dropdown is a consequence of the same rule from the other end. By the time the fix
+   has been applied the submission is long since acknowledged, so the category question cannot be the
+   *response* to it — it is posted as an ephemeral **followup**
+   (`POST /webhooks/{appId}/{token}`, `DiscordClient.CreateFollowupMessageAsync`).
 5. **Rate limits.** Per-route buckets plus a global limit, communicated via `X-RateLimit-*` headers
    and `429` + `retry_after`. A build farm bursts hard on a broken stream. The client needs real
    bucket handling, not just Polly retries.

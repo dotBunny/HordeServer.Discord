@@ -88,6 +88,47 @@ namespace HordeServer.Discord.Tests.Client
 			Assert.AreEqual("https://horde.example.com/issue/1", button.Url);
 		}
 
+		[TestMethod]
+		public void ASelectTakesAWholeRow()
+		{
+			List<DiscordComponent> rows = new DiscordComponentBuilder()
+				.AddButton("issue_1_ack", "Acknowledge")
+				.AddSelect("issue_1_category", Categories(3), "Pick a category")
+				.AddButton("issue_1_decline", "Decline")
+				.Build()!;
+
+			Assert.AreEqual(3, rows.Count, "Discord will not put anything else in a row with a select menu.");
+			Assert.AreEqual(DiscordComponentType.Button, rows[0].Components![0].Type);
+			Assert.AreEqual(DiscordComponentType.StringSelect, rows[1].Components![0].Type);
+			Assert.AreEqual(1, rows[1].Components!.Count);
+			Assert.AreEqual(DiscordComponentType.Button, rows[2].Components![0].Type);
+		}
+
+		[TestMethod]
+		public void ASelectIsCappedAtTwentyFiveOptions()
+		{
+			// The root cause category list is twelve, so this is headroom rather than a live constraint - but a
+			// rejected message shows nothing at all, and Horde's vocabularies grow.
+			List<DiscordComponent> rows = new DiscordComponentBuilder()
+				.AddSelect("issue_1_category", Categories(40))
+				.Build()!;
+
+			Assert.AreEqual(DiscordComponentLimits.SelectOptions, rows[0].Components![0].Options!.Count);
+		}
+
+		[TestMethod]
+		public void ASelectAsksForExactlyOneAnswer()
+		{
+			List<DiscordComponent> rows = new DiscordComponentBuilder()
+				.AddSelect("issue_1_category", Categories(3))
+				.Build()!;
+
+			DiscordComponent select = rows[0].Components![0];
+
+			Assert.AreEqual(1, select.MinValues);
+			Assert.AreEqual(1, select.MaxValues);
+		}
+
 		#endregion
 
 		#region Serialisation
@@ -190,6 +231,9 @@ namespace HordeServer.Discord.Tests.Client
 		}
 
 		#endregion
+
+		static List<DiscordSelectOption> Categories(int count)
+			=> [.. Enumerable.Range(0, count).Select(x => new DiscordSelectOption { Label = $"Category {x}", Value = $"cat{x}" })];
 
 		static string Serialise(DiscordMessage message)
 			=> JsonSerializer.Serialize(message, new JsonSerializerOptions

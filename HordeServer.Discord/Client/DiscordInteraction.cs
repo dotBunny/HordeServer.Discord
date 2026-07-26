@@ -127,6 +127,46 @@ namespace HordeServer.Discord.Client
 		public string? CustomId => Data?.CustomId;
 
 		/// <summary>
+		/// What was typed into a submitted modal, keyed by each field's custom id.
+		/// </summary>
+		/// <remarks>
+		/// Discord returns the fields nested a row deep, in the same shape they were sent, rather than as the flat
+		/// map every caller wants. Empty optional fields come back as empty strings rather than being omitted, so
+		/// the distinction callers actually care about - "left blank" - is a
+		/// <see cref="String.IsNullOrWhiteSpace"/> check, not a missing key.
+		/// </remarks>
+		/// <returns>Field values by custom id. Empty if this is not a modal submission.</returns>
+		public IReadOnlyDictionary<string, string> GetModalValues()
+		{
+			Dictionary<string, string> values = new Dictionary<string, string>(StringComparer.Ordinal);
+
+			if (Data?.Components.ValueKind != JsonValueKind.Array)
+			{
+				return values;
+			}
+
+			foreach (JsonElement row in Data.Components.EnumerateArray())
+			{
+				if (!row.TryGetProperty("components", out JsonElement children) || children.ValueKind != JsonValueKind.Array)
+				{
+					continue;
+				}
+
+				foreach (JsonElement field in children.EnumerateArray())
+				{
+					if (field.TryGetProperty("custom_id", out JsonElement id) && id.ValueKind == JsonValueKind.String)
+					{
+						values[id.GetString()!] = field.TryGetProperty("value", out JsonElement value) && value.ValueKind == JsonValueKind.String
+							? value.GetString()!
+							: String.Empty;
+					}
+				}
+			}
+
+			return values;
+		}
+
+		/// <summary>
 		/// Where a response should edit, once the interaction has been acknowledged.
 		/// </summary>
 		[JsonIgnore]
@@ -205,9 +245,18 @@ namespace HordeServer.Discord.Client
 		[JsonPropertyName("type")]
 		public int Type { get; set; }
 
-		/// <summary>Message to send or replace with, for the callback types that carry one.</summary>
+		/// <summary>
+		/// The payload, whose shape depends on <see cref="Type"/>.
+		/// </summary>
+		/// <remarks>
+		/// A <see cref="DiscordMessage"/> for the callback types that send or replace one, a
+		/// <see cref="DiscordModal"/> for <see cref="DiscordInteractionCallbackType.Modal"/>, and absent for the
+		/// deferrals. Typed as <see cref="Object"/> because Discord reuses one field name for both and two
+		/// properties cannot share it - <c>System.Text.Json</c> serialises an object-declared property by its
+		/// runtime type, which produces exactly the right thing here.
+		/// </remarks>
 		[JsonPropertyName("data")]
-		public DiscordMessage? Data { get; set; }
+		public object? Data { get; set; }
 
 		/// <summary>
 		/// Acknowledges a component press without changing anything yet.
@@ -221,6 +270,39 @@ namespace HordeServer.Discord.Client
 		/// <param name="message">Replacement content.</param>
 		public static DiscordInteractionResponse Update(DiscordMessage message)
 			=> new DiscordInteractionResponse { Type = DiscordInteractionCallbackType.UpdateMessage, Data = message };
+
+		/// <summary>
+		/// Opens a modal in front of whoever used the component.
+		/// </summary>
+		/// <remarks>
+		/// **This can only ever be the first response to an interaction.** Once an interaction has been
+		/// acknowledged - even with a deferral - Discord refuses to open a modal against it, because there is no
+		/// longer anything for the dialog to attach to. That is squarely at odds with acknowledging everything up
+		/// front to beat the three-second deadline, so a handler that opens a modal has to be registered as
+		/// answering for itself. See <c>DiscordInteractionRouter.Register</c>.
+		/// </remarks>
+		/// <param name="modal">Dialog to open.</param>
+		public static DiscordInteractionResponse OpenModal(DiscordModal modal)
+			=> new DiscordInteractionResponse { Type = DiscordInteractionCallbackType.Modal, Data = modal };
+
+		/// <summary>
+		/// Replies with a message only the person who clicked can see.
+		/// </summary>
+		/// <remarks>
+		/// How the root-cause category follow-up is asked for: it is a question for one person mid-task, and posting
+		/// it into a shared triage channel would be noise for everyone else and would let anyone answer it.
+		/// </remarks>
+		/// <param name="message">Message to show. Its ephemeral flag is set here.</param>
+		public static DiscordInteractionResponse Ephemeral(DiscordMessage message)
+		{
+			message.Flags = DiscordMessageFlags.Ephemeral;
+
+			return new DiscordInteractionResponse
+			{
+				Type = DiscordInteractionCallbackType.ChannelMessageWithSource,
+				Data = message,
+			};
+		}
 	}
 
 	/// <summary>

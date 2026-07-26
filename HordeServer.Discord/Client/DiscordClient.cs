@@ -274,6 +274,34 @@ namespace HordeServer.Discord.Client
 		}
 
 		/// <summary>
+		/// Posts an additional message against an interaction that has already been answered.
+		/// </summary>
+		/// <remarks>
+		/// The half of the hybrid Mark Fixed flow that the deferral makes necessary. Once a modal submission has been
+		/// acknowledged, the root-cause category question cannot be the *response* to it any more - so it is posted
+		/// as a followup instead, ephemeral, after the fix has been applied. Fifteen minutes from the interaction,
+		/// like every other use of the token.
+		/// </remarks>
+		/// <param name="applicationId">Application the interaction belongs to.</param>
+		/// <param name="interactionToken">Continuation token the interaction arrived with.</param>
+		/// <param name="message">Message to post. Set <see cref="DiscordMessageFlags.Ephemeral"/> to show it only to
+		/// the person who acted.</param>
+		/// <param name="cancellationToken">Cancellation token for the operation.</param>
+		/// <returns>True if it was accepted.</returns>
+		public async Task<bool> CreateFollowupMessageAsync(string applicationId, string interactionToken, DiscordMessage message, CancellationToken cancellationToken)
+		{
+			string payload = JsonSerializer.Serialize(message, s_jsonOptions);
+			string path = $"webhooks/{applicationId}/{interactionToken}";
+
+			using HttpResponseMessage response = await _rateLimiter.SendAsync(
+				DiscordRoute.InteractionFollowup(),
+				token => _httpClient.SendAsync(CreateRequest(HttpMethod.Post, path, payload), token),
+				cancellationToken);
+
+			return await IsSuccessAsync(response, "post a followup to an interaction");
+		}
+
+		/// <summary>
 		/// Asks Discord which gateway host to connect to.
 		/// </summary>
 		/// <remarks>

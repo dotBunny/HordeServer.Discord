@@ -266,6 +266,15 @@ rebuild — a stale DLL against a newer server fails at plugin load rather than 
   has no choice but to identify again. Deliberate hang-ups use `4000`
   (`DiscordGateway.ResumableCloseCode`). This fails silently — everything still works, it just quietly
   re-identifies every time and eats the daily session-start allowance.
+- **A modal can only be the *first* answer to an interaction.** Once anything has been sent — including
+  a deferral — Discord refuses to open one, because there is nothing left for the dialog to attach to.
+  That is directly at odds with `DiscordInteractionRouter`'s acknowledge-everything-first rule, which
+  is why `Register` takes an `answersForItself` predicate: the modal-opening verb runs unacknowledged
+  and owes Discord a response inside three seconds itself. Affordable only because opening a modal is
+  one request and nothing else — never put work in front of it.
+- **After deferring, a further message is a *followup*, not a response.** `POST /webhooks/{appId}/
+  {token}` rather than the callback endpoint. This is how the root-cause category dropdown reaches the
+  operator once the fix has already been applied and acknowledged.
 - **Discord modals accept text inputs only, max 5.** Slack's "Mark Fixed" view uses radio groups and a
   select menu and can present seven inputs. This is a component-type mismatch, not a count problem.
   The agreed resolution is in `PLAN.md` §3.3.4.
