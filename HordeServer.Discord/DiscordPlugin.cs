@@ -55,17 +55,24 @@ namespace HordeServer
 			serviceCollection.AddSingleton<DiscordGateway>();
 			serviceCollection.AddSingleton<IHostedService>(sp => sp.GetRequiredService<DiscordGateway>());
 
+			// What makes the triage buttons do something. Behind IHordeIssues because Horde's IssueService is a
+			// concrete class that reaches MongoDB in its constructor, and this repo's tests run without one.
+			//
+			// **Registered before the router, and the order is load-bearing.** IHostedService instances start in
+			// registration order, and this one's StartAsync is what calls DiscordInteractionRouter.Register - so
+			// starting it second left the router announcing "no scopes registered yet" at every boot, which reads
+			// as a fault and is the line an operator checks to confirm triage is live. Nothing else depends on the
+			// order: Register only writes a ConcurrentDictionary, and the router's own StartAsync just subscribes
+			// to the gateway.
+			serviceCollection.AddSingleton<IHordeIssues, HordeIssues>();
+			serviceCollection.AddSingleton<DiscordIssueTriage>();
+			serviceCollection.AddSingleton<IHostedService>(sp => sp.GetRequiredService<DiscordIssueTriage>());
+
 			// Also a hosted service, and not only because it subscribes to the gateway on start: nothing else
 			// depends on it yet - the issue members are what will - and a singleton nobody resolves is never
 			// constructed, so without this the buttons would simply not work.
 			serviceCollection.AddSingleton<DiscordInteractionRouter>();
 			serviceCollection.AddSingleton<IHostedService>(sp => sp.GetRequiredService<DiscordInteractionRouter>());
-
-			// What makes the triage buttons do something. Behind IHordeIssues because Horde's IssueService is a
-			// concrete class that reaches MongoDB in its constructor, and this repo's tests run without one.
-			serviceCollection.AddSingleton<IHordeIssues, HordeIssues>();
-			serviceCollection.AddSingleton<DiscordIssueTriage>();
-			serviceCollection.AddSingleton<IHostedService>(sp => sp.GetRequiredService<DiscordIssueTriage>());
 
 			serviceCollection.AddSingleton<DiscordChannelResolver>();
 

@@ -529,6 +529,8 @@ namespace DiscordSmoke
 				                                                                            instead, holding for 50s
 				  dotnet run --project tools/DiscordSmoke -c Development -- --interact     post buttons and wait
 				                                                                            for someone to press one
+				  dotnet run --project tools/DiscordSmoke -c Development -- --modal       post a button that opens
+				                                                                            the Mark Fixed dialog
 
 				Credentials come from Horde.local.props (git-ignored) or the DISCORD_* environment variables.
 				See Horde.local.props.template.

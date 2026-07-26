@@ -267,7 +267,26 @@ rebuild — a stale DLL against a newer server fails at plugin load rather than 
 - **The `HordeBinDir` validation target must run `BeforeTargets="ResolveAssemblyReferences"`.** At
   `BeforeCompile` it fires *after* MSBuild has already emitted MSB3245 warnings for every engine
   reference, burying the actual explanation.
-- **`PluginName` normalises to lowercase** — the plugin registers as `discord`, not `Discord`.
+- **`PluginName` normalises to lowercase** — the plugin registers as `discord`, not `Discord`. It
+  normalises rather than rejects: `StringId.TryParse` lowercases `A`–`Z` in place
+  (`EpicGames.Horde/StringId.cs:201-218`), so **config key casing is irrelevant everywhere** —
+  `plugins.Discord` in `globals.json` binds exactly like `plugins.discord`, and `Horde:Plugins` binds
+  into an `OrdinalIgnoreCase` dictionary besides. The README asserted the opposite for three phases.
+  What *is* silently skipped is an **unrecognised** name: `PluginConfigCollectionConverter.Read` calls
+  `reader.Skip()` for any key not in `NameToType`, which `ConfigService` fills from **loaded plugins
+  only**. So a `server.json` mistake that stops the plugin loading also swallows its `globals.json`
+  section without a word — one cause, two symptoms, and neither logs anything.
+- **`Plugins` goes *inside* `Horde` in `server.json`, and getting it wrong is completely silent.**
+  Horde reads `Horde:Plugins:<name>` for both discovery (`ServerApp.cs:257`) and server-config binding
+  (`Startup.cs:282-286`). A top-level `"Plugins"` block is never read, so nothing enables the plugin —
+  and because `EnabledByDefault = false`, the `Unable to find plugin(s) enabled in config file` throw
+  at `ServerApp.cs:313` never fires either. `Loading …HordeServer.Discord.dll` still appears, because
+  that is the directory scan; the sink's own registration line is what is missing.
+- **Hosted-service registration order in `DiscordPlugin.ConfigureServices` is load-bearing.**
+  `IHostedService` instances start in registration order, and `DiscordIssueTriage.StartAsync` is what
+  calls `DiscordInteractionRouter.Register`. Registering the router first left it logging
+  `listening (no scopes registered yet)` at every boot — harmless, but it is precisely the line an
+  operator checks to confirm triage is live, so it read as a fault. Triage is now registered first.
 - **Closing a gateway socket with `1000` destroys the session.** A clean close tells Discord the
   session is finished, so the state a `RESUME` would replay from is discarded and the next connection
   has no choice but to identify again. Deliberate hang-ups use `4000`
