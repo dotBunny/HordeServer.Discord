@@ -43,7 +43,7 @@ engine it was built against matters. The current code is built and verified agai
 
 | | |
 |---|---|
-| Unreal Engine | **5.8.0** (`BranchName` UE5) |
+| Unreal Engine | **5.8.0** (`release` UE5) |
 | Horde server binaries | built 2026-07-25 |
 
 Check your own with `Engine/Build/Build.version`. A source build reports `"Changelist": 0`, so there is
