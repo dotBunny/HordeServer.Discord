@@ -20,6 +20,7 @@ namespace HordeServer.Discord.Client
 
 		string? _content;
 		DiscordAllowedMentions? _allowedMentions;
+		List<DiscordComponent>? _components;
 
 		/// <summary>
 		/// Sets the plain text shown above the embeds.
@@ -60,6 +61,31 @@ namespace HordeServer.Discord.Client
 		/// <param name="embed">Builder to take the embed from.</param>
 		/// <returns>This builder.</returns>
 		public DiscordMessageBuilder AddEmbed(DiscordEmbedBuilder embed) => AddEmbed(embed.Build());
+
+		/// <summary>
+		/// Adds action rows of buttons beneath the embeds.
+		/// </summary>
+		/// <param name="components">Builder to take the rows from. Nothing is added if it is empty.</param>
+		/// <returns>This builder.</returns>
+		public DiscordMessageBuilder WithComponents(DiscordComponentBuilder components)
+		{
+			_components = components.Build();
+			return this;
+		}
+
+		/// <summary>
+		/// Removes every button from a message being edited.
+		/// </summary>
+		/// <remarks>
+		/// An omitted <c>components</c> leaves the existing ones in place, so taking buttons away means sending an
+		/// explicitly empty list. This is how an issue that has been resolved stops offering to resolve it again.
+		/// </remarks>
+		/// <returns>This builder.</returns>
+		public DiscordMessageBuilder WithoutComponents()
+		{
+			_components = new List<DiscordComponent>();
+			return this;
+		}
 
 		/// <summary>
 		/// Produces the message.
@@ -103,6 +129,7 @@ namespace HordeServer.Discord.Client
 				Content = content == null ? null : DiscordEmbedLimits.Truncate(content, DiscordEmbedLimits.MessageContent),
 				Embeds = included.Count > 0 ? included : null,
 				AllowedMentions = _allowedMentions ?? DiscordAllowedMentions.None,
+				Components = _components,
 			};
 		}
 	}

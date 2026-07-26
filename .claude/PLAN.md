@@ -478,8 +478,12 @@ HordeServer.Discord/                         (this repo)
 │     ├─ DiscordGateway.cs                ✅ identify/heartbeat/resume/dispatch, over an IDiscordWebSocket
 │     │                                      seam. DiscordGatewayProtocol.cs holds the opcodes and the
 │     │                                      pure close-code/backoff policy
-│     ├─ Components.cs                    ▫️ action rows, buttons, modals
-│     └─ DiscordInteractionHandler.cs     ▫️ buttons + modal → IssueService verbs
+│     ├─ DiscordComponent.cs              ✅ action rows and buttons, wrapping at 5 per row. Modals
+│     │                                      and select menus arrive with the Mark Fixed flow
+│     ├─ DiscordInteraction.cs            ✅ inbound interaction, callback types, and DiscordCustomId
+│     │                                      (Slack's issue_{id}_{verb}[_{userId}] grammar, kept)
+│     └─ Notifications/                   ✅ DiscordInteractionRouter: gateway dispatch → registered
+│        DiscordInteractionRouter.cs         handler, acknowledging before it runs
 ├─ tools/PluginProbe/                     ✅ the load probe - replicates
 │                                            ServerApp.CreatePluginCollection without Mongo/Redis.
 │                                            Now a shared library with a console front end; the
@@ -809,8 +813,23 @@ building it:
 - **`4007` and `4009` are recoverable but the session behind them is not.** Both mean reconnect;
   neither means resume. Resuming from a sequence the server has forgotten just earns another `4007`.
 
-Still to come in this phase: the interaction handler, components, the modal flow, and the last two
-sink members.
+**Interaction handler built and verified live, 2026-07-26.** A message with buttons was posted to a
+real channel, a real person pressed one, and the message rewrote itself and lost its buttons — the
+whole inbound path, end to end. `tools/DiscordSmoke -- --interact` is that check, and it needs a human
+because the failure mode is the client showing *"This interaction failed"*, which appears in no log.
+
+The shape of `DiscordInteractionRouter` is forced by one constraint. **An interaction must be answered
+within three seconds**, and Horde's issue operations are database work behind a service call — not a
+budget worth betting an operator's triage flow on. So it acknowledges with a *deferred update* before
+calling the handler, which then has fifteen minutes to edit the message through the interaction token.
+Handlers never see the deadline. Two consequences worth recording:
+
+- **A failed acknowledgement cancels the work.** Without it the token is useless, so the handler would
+  do the work and have no way to report it — and the operator, seeing a failed button, presses again.
+- **Handlers run off the gateway's receive loop.** That loop also reads heartbeat acknowledgements, so
+  a handler blocking it would eventually be diagnosed as a dead connection and provoke a reconnect.
+
+Still to come in this phase: the modal flow (§3.3.4), select menus, and the last two sink members.
 
 Interaction handler mapping component `custom_id`s to the same `IssueService` calls the Slack sink
 makes — `ack` / `accept` / `decline`, in both DM and channel flavours (Slack keeps two handlers,

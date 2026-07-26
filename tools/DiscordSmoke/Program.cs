@@ -87,6 +87,11 @@ namespace DiscordSmoke
 				return await RunGatewayAsync(settings, HoldSeconds(args));
 			}
 
+			if (args.Contains("--interact"))
+			{
+				return await RunInteractAsync(settings, HoldSeconds(args, 120));
+			}
+
 			IReadOnlyList<Scenario> all = Scenarios.All(settings);
 			IReadOnlyList<Scenario> chosen = Choose(all, args, out string? unknown);
 
@@ -234,9 +239,104 @@ namespace DiscordSmoke
 		}
 
 		/// <summary>
-		/// How long <c>--gateway</c> should hold the connection, from the first number on the command line.
+		/// Posts a message with buttons and waits for somebody to press one.
 		/// </summary>
-		static int HoldSeconds(string[] args)
+		/// <remarks>
+		/// The only check that covers the whole inbound path at once: a component serialised the way Discord accepts
+		/// it, an <c>INTERACTION_CREATE</c> arriving over the socket, the acknowledgement landing inside the
+		/// three-second deadline, and the message being edited through the interaction token afterwards. The unit
+		/// tests assert each of those against a fake; none of them can tell you Discord agrees.
+		///
+		/// Needs a human, which is the point. If the acknowledgement is too slow or malformed, what you see is the
+		/// client showing "This interaction failed" - a symptom that exists nowhere in any log.
+		/// </remarks>
+		static async Task<int> RunInteractAsync(SmokeSettings settings, int holdSeconds)
+		{
+			using ILoggerFactory loggerFactory = LoggerFactory.Create(builder => builder
+				.AddSimpleConsole(options => options.SingleLine = true)
+				.SetMinimumLevel(LogLevel.Information));
+
+			IOptions<DiscordServerConfig> serverConfig = Options.Create(ServerConfig(settings));
+
+			using DiscordClient client = CreateClient(settings, loggerFactory);
+			using DiscordGateway gateway = new DiscordGateway(serverConfig, client, loggerFactory.CreateLogger<DiscordGateway>());
+
+			DiscordInteractionRouter router = new DiscordInteractionRouter(
+				gateway, client, serverConfig, loggerFactory.CreateLogger<DiscordInteractionRouter>());
+
+			int presses = 0;
+
+			router.Register(DiscordCustomId.IssueScope, async (context, cancellationToken) =>
+			{
+				presses++;
+				Console.WriteLine($"  pressed: {context.CustomId.Verb} by user {context.DiscordUserId}");
+
+				DiscordEmbedBuilder embed = new DiscordEmbedBuilder()
+					.WithTitle("Interaction round trip")
+					.WithColor(0x57F287)
+					.AddField("Verb", context.CustomId.Verb, true)
+					.AddField("Pressed by", $"<@{context.DiscordUserId}>", true);
+
+				// Through the interaction token, and with the buttons removed - the same two things a resolved
+				// triage message does.
+				bool edited = await router.UpdateMessageAsync(
+					context,
+					new DiscordMessageBuilder().AddEmbed(embed).WithoutComponents().Build(),
+					cancellationToken);
+
+				Console.WriteLine(edited ? "  message updated" : "  message could NOT be updated");
+			});
+
+			DiscordMessage message = new DiscordMessageBuilder()
+				.AddEmbed(new DiscordEmbedBuilder()
+					.WithTitle("Interaction round trip")
+					.WithDescription("Press a button. This message should rewrite itself and the buttons should go away.")
+					.WithColor(0xFEE75C))
+				.WithComponents(new DiscordComponentBuilder()
+					.AddButton(new DiscordCustomId(DiscordCustomId.IssueScope, "smoke", "ack").ToString(), "Acknowledge", DiscordButtonStyle.Success)
+					.AddButton(new DiscordCustomId(DiscordCustomId.IssueScope, "smoke", "decline").ToString(), "Decline", DiscordButtonStyle.Danger)
+					.AddLink(settings.DashboardUrl.ToString(), "Open in Horde"))
+				.Build();
+
+			if (await client.CreateMessageAsync(settings.ChannelId, message, CancellationToken.None) == null)
+			{
+				Console.Error.WriteLine("The message with the buttons could not be posted; nothing to press.");
+				return 1;
+			}
+
+			Console.WriteLine($"Posted a message with buttons to channel {settings.ChannelId}.");
+			Console.WriteLine($"Go and press one - waiting {holdSeconds}s.");
+			Console.WriteLine();
+
+			using CancellationTokenSource stopping = new CancellationTokenSource();
+			Task running = gateway.RunAsync(stopping.Token);
+
+			await router.StartAsync(CancellationToken.None);
+
+			DateTime deadline = DateTime.UtcNow.AddSeconds(holdSeconds);
+
+			while (DateTime.UtcNow < deadline && !running.IsCompleted)
+			{
+				await Task.Delay(TimeSpan.FromMilliseconds(250.0));
+			}
+
+			await router.StopAsync(CancellationToken.None);
+			await stopping.CancelAsync();
+			await running;
+
+			Console.WriteLine();
+			Console.WriteLine(presses > 0
+				? $"{presses} interaction(s) round-tripped. Check the channel: the message should have rewritten "
+					+ "itself and lost its buttons."
+				: "Nobody pressed anything, so the inbound path is still unproven. Re-run and press a button.");
+
+			return presses > 0 ? 0 : 1;
+		}
+
+		/// <summary>
+		/// How long a holding mode should wait, from the first number on the command line.
+		/// </summary>
+		static int HoldSeconds(string[] args, int fallback = 15)
 		{
 			foreach (string arg in args)
 			{
@@ -246,7 +346,7 @@ namespace DiscordSmoke
 				}
 			}
 
-			return 15;
+			return fallback;
 		}
 
 		static void PrintUsage()
@@ -258,6 +358,8 @@ namespace DiscordSmoke
 				  dotnet run --project tools/DiscordSmoke -c Development -- step label      just those
 				  dotnet run --project tools/DiscordSmoke -c Development -- --gateway 50    connect the gateway
 				                                                                            instead, holding for 50s
+				  dotnet run --project tools/DiscordSmoke -c Development -- --interact     post buttons and wait
+				                                                                            for someone to press one
 
 				Credentials come from Horde.local.props (git-ignored) or the DISCORD_* environment variables.
 				See Horde.local.props.template.

@@ -180,6 +180,12 @@ reason, since someone reading a red test ends up in its types.
   `IDiscordWebSocket` for the socket and `IDiscordClock` for the heartbeat — and the decisions
   (close-code classification, backoff) are pure functions in `DiscordGatewayPolicy`. Live-checkable
   with `dotnet run --project tools/DiscordSmoke -c Development -- --gateway 50`.
+- **`Notifications/DiscordInteractionRouter`** — gateway dispatch to whoever registered for a custom-id
+  scope. It exists for one reason: **Discord gives three seconds to answer an interaction**, so it
+  acknowledges with a deferred update *before* calling the handler, which then has fifteen minutes to
+  edit the message through the interaction token. Handlers never see the deadline. They also run off
+  the receive loop, because that loop is what reads heartbeat acknowledgements. Live-checkable with
+  `-- --interact`, which needs someone to actually press the button.
 
 `INotificationSink` is internal to Horde with **no stability guarantee**. After an engine upgrade,
 rebuild — a stale DLL against a newer server fails at plugin load rather than degrading.

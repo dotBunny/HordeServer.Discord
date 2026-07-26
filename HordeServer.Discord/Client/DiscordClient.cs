@@ -218,6 +218,62 @@ namespace HordeServer.Discord.Client
 		}
 
 		/// <summary>
+		/// Answers an interaction.
+		/// </summary>
+		/// <remarks>
+		/// **Within three seconds of the interaction arriving**, or Discord shows the person who clicked a failure
+		/// and refuses the response. That deadline is on this call only; once it has been met with a deferred
+		/// acknowledgement, <see cref="EditInteractionResponseAsync"/> has fifteen minutes.
+		///
+		/// The interaction token in the path is what authorises this, not the bot token - which is why the same call
+		/// works from a web service that holds no bot credentials at all. The bot header goes along anyway, because
+		/// it is on the shared <see cref="HttpClient"/> and Discord ignores it here.
+		/// </remarks>
+		/// <param name="interactionId">Interaction being answered.</param>
+		/// <param name="interactionToken">Continuation token it arrived with.</param>
+		/// <param name="response">The answer.</param>
+		/// <param name="cancellationToken">Cancellation token for the operation.</param>
+		/// <returns>True if Discord accepted it.</returns>
+		public async Task<bool> RespondToInteractionAsync(string interactionId, string interactionToken, DiscordInteractionResponse response, CancellationToken cancellationToken)
+		{
+			string payload = JsonSerializer.Serialize(response, s_jsonOptions);
+			string path = $"interactions/{interactionId}/{interactionToken}/callback";
+
+			using HttpResponseMessage result = await _rateLimiter.SendAsync(
+				DiscordRoute.InteractionCallback(interactionId),
+				token => _httpClient.SendAsync(CreateRequest(HttpMethod.Post, path, payload), token),
+				cancellationToken);
+
+			return await IsSuccessAsync(result, "respond to interaction {InteractionId}", interactionId);
+		}
+
+		/// <summary>
+		/// Replaces the message an interaction was acknowledged against.
+		/// </summary>
+		/// <remarks>
+		/// The other half of the deferred pattern. Valid for fifteen minutes from the interaction, and addressed by
+		/// its token rather than by the channel, which is why it works even for an ephemeral reply that has no
+		/// message id.
+		/// </remarks>
+		/// <param name="applicationId">Application the interaction belongs to.</param>
+		/// <param name="interactionToken">Continuation token the interaction arrived with.</param>
+		/// <param name="message">Replacement content.</param>
+		/// <param name="cancellationToken">Cancellation token for the operation.</param>
+		/// <returns>True if the edit was accepted.</returns>
+		public async Task<bool> EditInteractionResponseAsync(string applicationId, string interactionToken, DiscordMessage message, CancellationToken cancellationToken)
+		{
+			string payload = JsonSerializer.Serialize(message, s_jsonOptions);
+			string path = $"webhooks/{applicationId}/{interactionToken}/messages/@original";
+
+			using HttpResponseMessage response = await _rateLimiter.SendAsync(
+				DiscordRoute.InteractionResponse(),
+				token => _httpClient.SendAsync(CreateRequest(HttpMethod.Patch, path, payload), token),
+				cancellationToken);
+
+			return await IsSuccessAsync(response, "edit the response to an interaction");
+		}
+
+		/// <summary>
 		/// Asks Discord which gateway host to connect to.
 		/// </summary>
 		/// <remarks>
@@ -275,6 +331,7 @@ namespace HordeServer.Discord.Client
 			{
 				Content = new StringContent(payload, Encoding.UTF8, "application/json"),
 			};
+
 
 		async Task<bool> IsSuccessAsync(HttpResponseMessage response, string what, params object?[] args)
 		{

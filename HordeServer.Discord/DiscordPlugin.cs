@@ -55,6 +55,12 @@ namespace HordeServer
 			serviceCollection.AddSingleton<DiscordGateway>();
 			serviceCollection.AddSingleton<IHostedService>(sp => sp.GetRequiredService<DiscordGateway>());
 
+			// Also a hosted service, and not only because it subscribes to the gateway on start: nothing else
+			// depends on it yet - the issue members are what will - and a singleton nobody resolves is never
+			// constructed, so without this the buttons would simply not work.
+			serviceCollection.AddSingleton<DiscordInteractionRouter>();
+			serviceCollection.AddSingleton<IHostedService>(sp => sp.GetRequiredService<DiscordInteractionRouter>());
+
 			serviceCollection.AddSingleton<DiscordChannelResolver>();
 
 			// Behind its interface so a /link slash command can be added later as a second provider without

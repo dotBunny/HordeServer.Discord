@@ -21,6 +21,17 @@ namespace HordeServer.Discord.Client
 		/// <summary>Which mentions in the content are allowed to actually ping anyone.</summary>
 		[JsonPropertyName("allowed_mentions")]
 		public DiscordAllowedMentions? AllowedMentions { get; set; }
+
+		/// <summary>
+		/// Action rows of buttons beneath the embeds.
+		/// </summary>
+		/// <remarks>
+		/// Sending this on an *edit* replaces whatever was there, and omitting it leaves the existing components
+		/// alone. An empty list is therefore the only way to take buttons away - which is how a triage message stops
+		/// offering actions once the issue is resolved.
+		/// </remarks>
+		[JsonPropertyName("components")]
+		public List<DiscordComponent>? Components { get; set; }
 	}
 
 	/// <summary>

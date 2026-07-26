@@ -65,5 +65,15 @@ namespace HordeServer.Discord.Client
 		/// <param name="interactionId">Interaction snowflake.</param>
 		public static DiscordRoute InteractionCallback(string interactionId)
 			=> new DiscordRoute($"POST /interactions/{interactionId}/callback", true);
+
+		/// <summary>
+		/// Editing the reply already sent to an interaction.
+		/// </summary>
+		/// <remarks>
+		/// Also exempt. It is the second half of every deferred response, so throttling it would leave a button
+		/// acknowledged and its message never updated - the worst of the available outcomes.
+		/// </remarks>
+		public static DiscordRoute InteractionResponse()
+			=> new DiscordRoute("PATCH /webhooks/:id/:token/messages/@original", true);
 	}
 }
