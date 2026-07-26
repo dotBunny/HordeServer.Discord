@@ -3,6 +3,7 @@
 using System.Net;
 using System.Text.Json;
 using EpicGames.Horde.Agents;
+using EpicGames.Horde.Issues;
 using EpicGames.Horde.Jobs;
 using EpicGames.Horde.Logs;
 using EpicGames.Horde.Users;
@@ -1286,9 +1287,8 @@ namespace HordeServer.Discord.Tests.Notifications
 
 		#region Triage role mentions
 
-		// The alias-to-issue wiring - which workflow's triageAlias applies, and only while nobody is assigned -
-		// needs a populated BuildConfig with streams and workflows, which nothing here builds. These cover the half
-		// that can be wrong on its own: turning an alias into a mention that actually pings, in the right guild.
+		// These cover turning an alias into a mention that actually pings, in the right guild. Which workflow's
+		// triageAlias applies is decided by the same code as the channel, and is covered under Triage routing.
 
 		[TestMethod]
 		public async Task AnAliasIsMentionedAndAllowedToPing()
@@ -1502,6 +1502,130 @@ namespace HordeServer.Discord.Tests.Notifications
 				"Recording a thread that does not exist would send every later update into nothing.");
 		}
 
+		#region Triage routing
+
+		// These need a populated BuildConfig, which nothing here used to build - which is how the routing below
+		// diverged from Epic's unnoticed. BuildConfigFakes exists to close that.
+
+		const string UgsSlackId = "C0UGS000000";
+		const string PublishSlackId = "C0PUB000000";
+		const string UgsChannel = "100000000000000007";
+		const string PublishChannel = "100000000000000008";
+
+		/// <summary>
+		/// The channel map plus the two triage channels these tests distinguish between.
+		/// </summary>
+		static DiscordConfig MappedTriage()
+		{
+			DiscordConfig config = Harness.Mapped();
+			config.Channels[UgsSlackId] = new DiscordChannelMapping { Label = "dethol-ugs", Channel = UgsChannel };
+			config.Channels[PublishSlackId] = new DiscordChannelMapping { Label = "dethol-publish", Channel = PublishChannel };
+			return Harness.PostLoad(config);
+		}
+
+		[TestMethod]
+		public async Task OnlyTheWorkflowThatOwnsTheFailureIsTriaged()
+		{
+			// Two workflows in one stream, and the failing step is annotated with the second. Posting to both is the
+			// bug this covers: a UGS channel receiving publish triage is how a channel gets muted.
+			BuildConfig build = BuildConfigFakes.With(
+				BuildConfigFakes.Stream("ue5-dethol")
+					.Workflow("ugs", triageChannel: UgsSlackId)
+					.Workflow("publish", triageChannel: PublishSlackId));
+
+			Harness harness = new Harness(config: MappedTriage(), buildConfig: build);
+			harness.Issues.SetSpans(42, new FakeIssueSpan("ue5-dethol", workflowId: "publish"));
+
+			await harness.Processor.NotifyIssueUpdatedAsync(IssueFakes.Issue(42, "Compile error in Core", "ue5-dethol"), default);
+
+			Assert.AreEqual(1, harness.Handler.Requests.Count, "Only the failing step's workflow triages the issue.");
+			StringAssert.Contains(harness.Handler.Requests[0].Uri, $"channels/{PublishChannel}/messages");
+		}
+
+		[TestMethod]
+		public async Task AWorkflowThatDoesNotTriageWarningsIsNotSentOne()
+		{
+			BuildConfig build = BuildConfigFakes.With(
+				BuildConfigFakes.Stream("ue5-dethol")
+					.Workflow("publish", triageChannel: PublishSlackId, triageWarnings: false));
+
+			Harness harness = new Harness(config: MappedTriage(), buildConfig: build);
+			harness.Issues.SetSpans(42, new FakeIssueSpan("ue5-dethol", workflowId: "publish"));
+
+			FakeIssue issue = IssueFakes.Issue(42, "Deprecated API in Core", "ue5-dethol");
+			issue.Severity = IssueSeverity.Warning;
+
+			await harness.Processor.NotifyIssueUpdatedAsync(issue, default);
+
+			// Nothing routed it, so it lands in the job channel rather than the workflow's.
+			StringAssert.Contains(harness.Handler.Requests[0].Uri, $"channels/{JobChannel}/messages");
+		}
+
+		[TestMethod]
+		public async Task AWorkflowThatDoesTriageErrorsStillGetsThem()
+		{
+			BuildConfig build = BuildConfigFakes.With(
+				BuildConfigFakes.Stream("ue5-dethol")
+					.Workflow("publish", triageChannel: PublishSlackId, triageWarnings: false));
+
+			Harness harness = new Harness(config: MappedTriage(), buildConfig: build);
+			harness.Issues.SetSpans(42, new FakeIssueSpan("ue5-dethol", workflowId: "publish"));
+
+			// Same configuration as above; only the severity differs. The gate must narrow, not disable.
+			await harness.Processor.NotifyIssueUpdatedAsync(IssueFakes.Issue(42, "Compile error in Core", "ue5-dethol"), default);
+
+			StringAssert.Contains(harness.Handler.Requests[0].Uri, $"channels/{PublishChannel}/messages");
+		}
+
+		[TestMethod]
+		public async Task ATemplateTriageChannelReplacesTheStreamsRatherThanAddingToIt()
+		{
+			BuildConfig build = BuildConfigFakes.With(
+				BuildConfigFakes.Stream("ue5-dethol", triageChannel: UgsSlackId)
+					.Template("publish-build", triageChannel: PublishSlackId));
+
+			Harness harness = new Harness(config: MappedTriage(), buildConfig: build);
+			harness.Issues.SetSpans(42, new FakeIssueSpan("ue5-dethol", templateId: "publish-build"));
+
+			await harness.Processor.NotifyIssueUpdatedAsync(IssueFakes.Issue(42, "Compile error in Core", "ue5-dethol"), default);
+
+			Assert.AreEqual(1, harness.Handler.Requests.Count,
+				"A template that redirects its triage means 'not the stream channel', not 'both'.");
+			StringAssert.Contains(harness.Handler.Requests[0].Uri, $"channels/{PublishChannel}/messages");
+		}
+
+		[TestMethod]
+		public async Task AStreamTriageChannelIsUsedWhenTheTemplateHasNone()
+		{
+			BuildConfig build = BuildConfigFakes.With(
+				BuildConfigFakes.Stream("ue5-dethol", triageChannel: PublishSlackId)
+					.Template("publish-build"));
+
+			Harness harness = new Harness(config: MappedTriage(), buildConfig: build);
+			harness.Issues.SetSpans(42, new FakeIssueSpan("ue5-dethol", templateId: "publish-build"));
+
+			await harness.Processor.NotifyIssueUpdatedAsync(IssueFakes.Issue(42, "Compile error in Core", "ue5-dethol"), default);
+
+			StringAssert.Contains(harness.Handler.Requests[0].Uri, $"channels/{PublishChannel}/messages");
+		}
+
+		[TestMethod]
+		public async Task AnIssueWithNoSpansFallsBackToTheJobChannel()
+		{
+			BuildConfig build = BuildConfigFakes.With(
+				BuildConfigFakes.Stream("ue5-dethol", triageChannel: PublishSlackId));
+
+			// The issue still names the stream. Routing must not fall back to reading IIssue.Streams, because that is
+			// precisely the guess that could not tell one workflow from another.
+			Harness harness = new Harness(config: MappedTriage(), buildConfig: build);
+
+			await harness.Processor.NotifyIssueUpdatedAsync(IssueFakes.Issue(42, "Compile error in Core", "ue5-dethol"), default);
+
+			StringAssert.Contains(harness.Handler.Requests[0].Uri, $"channels/{JobChannel}/messages");
+		}
+
+		#endregion
+
 		[TestMethod]
 		public async Task AnIssueLinksToAStreamSummaryTheDashboardActuallyHas()
 		{
@@ -1614,7 +1738,7 @@ namespace HordeServer.Discord.Tests.Notifications
 			/// issue notification, and most of these tests are about the message rather than about where it lives.
 			/// Pass null to exercise the automatic behaviour.
 			/// </param>
-			public Harness(FakeUserCollection? users = null, DiscordConfig? config = null, string? botToken = "token", string? agentChannel = AgentChannel, string? slackToken = null, bool? enableDeepLinks = null, bool? enableTriageThreads = false, params HttpResponseMessage[] responses)
+			public Harness(FakeUserCollection? users = null, DiscordConfig? config = null, string? botToken = "token", string? agentChannel = AgentChannel, string? slackToken = null, bool? enableDeepLinks = null, bool? enableTriageThreads = false, BuildConfig? buildConfig = null, params HttpResponseMessage[] responses)
 			{
 				DiscordServerConfig serverConfig = new DiscordServerConfig
 				{
@@ -1657,7 +1781,7 @@ namespace HordeServer.Discord.Tests.Notifications
 					new DiscordRepeatFilter(new FakeDiscordClock()),
 					options,
 					buildServerConfig,
-					new StaticOptionsMonitor<BuildConfig>(new BuildConfig()),
+					new StaticOptionsMonitor<BuildConfig>(buildConfig ?? new BuildConfig()),
 					users ?? new FakeUserCollection(),
 					Issues,
 					new FakeServerInfo(),

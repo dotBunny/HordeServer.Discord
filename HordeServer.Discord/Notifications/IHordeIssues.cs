@@ -8,15 +8,15 @@ using Microsoft.Extensions.Logging;
 namespace HordeServer.Discord.Notifications
 {
 	/// <summary>
-	/// The issue operations a triage button performs.
+	/// The issue operations the plugin performs - what a triage button does, and what routing needs to read.
 	/// </summary>
 	/// <remarks>
 	/// A seam over Horde's <c>IssueService</c>, which is a concrete sealed class that reaches MongoDB in its
 	/// constructor. Without this, nothing that acts on a button press could be tested here at all - the test suite is
 	/// deliberately runnable with no MongoDB and no Redis, and that is the property being protected.
 	///
-	/// Narrow on purpose. It exposes the five things the buttons and the Mark Fixed modal do and nothing else, so the
-	/// adapter behind it stays thin enough to read and be confident in without a test.
+	/// Narrow on purpose. It exposes what the buttons and the Mark Fixed modal do, plus the one read that routing
+	/// needs, and nothing else - so the adapter behind it stays thin enough to read and be confident in without a test.
 	/// </remarks>
 	public interface IHordeIssues
 	{
@@ -27,6 +27,20 @@ namespace HordeServer.Discord.Notifications
 		/// <param name="cancellationToken">Cancellation token for the operation.</param>
 		/// <returns>The issue, or null if it no longer exists.</returns>
 		Task<IIssue?> GetAsync(int issueId, CancellationToken cancellationToken);
+
+		/// <summary>
+		/// The spans an issue is made of - where it was seen, and in what.
+		/// </summary>
+		/// <remarks>
+		/// Routing needs these and <see cref="IIssue"/> does not carry them. A span names the stream, the template, and
+		/// the failing step whose annotations pick the triage workflow - which between them decide the channel an issue
+		/// belongs in. Without them the best a sink can do is guess from <c>IIssue.Streams</c>, which is how this plugin
+		/// ended up posting to every workflow a stream defines rather than the one that owns the failure.
+		/// </remarks>
+		/// <param name="issueId">Issue to describe.</param>
+		/// <param name="cancellationToken">Cancellation token for the operation.</param>
+		/// <returns>The spans, which may be empty for an issue whose spans have been trimmed.</returns>
+		Task<IReadOnlyList<IIssueSpan>> FindSpansAsync(int issueId, CancellationToken cancellationToken);
 
 		/// <summary>
 		/// Marks an issue acknowledged, optionally taking ownership of it at the same time.
@@ -124,6 +138,10 @@ namespace HordeServer.Discord.Notifications
 		/// <inheritdoc/>
 		public Task<IIssue?> GetAsync(int issueId, CancellationToken cancellationToken)
 			=> _issues.Collection.GetIssueAsync(issueId, cancellationToken);
+
+		/// <inheritdoc/>
+		public Task<IReadOnlyList<IIssueSpan>> FindSpansAsync(int issueId, CancellationToken cancellationToken)
+			=> _issues.Collection.FindSpansAsync(issueId, cancellationToken);
 
 		/// <inheritdoc/>
 		public Task<bool> AcknowledgeAsync(int issueId, UserId userId, bool takeOwnership, CancellationToken cancellationToken)

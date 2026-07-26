@@ -433,7 +433,12 @@ namespace HordeServer.Discord.Notifications
 
 			UserId? recipientId = issue.OwnerId ?? issue.NominatedById;
 			IUser? recipient = recipientId == null ? null : await GetUserAsync(recipientId.Value, cancellationToken);
-			IReadOnlyList<DiscordDestination> triage = ResolveIssueChannels(issue);
+
+			// Read after the suppression checks above, so a notification nobody is going to see costs no query. This
+			// is the only thing in the issue path that reaches Mongo, and it is what makes the routing below correct
+			// rather than a guess from IIssue.Streams - see IHordeIssues.FindSpansAsync.
+			IReadOnlyList<IIssueSpan> spans = await _issues.FindSpansAsync(issue.Id, cancellationToken);
+			IReadOnlyList<DiscordDestination> triage = ResolveIssueChannels(issue, spans);
 
 			DiscordEmbedBuilder embed = BuildIssueEmbed(issue);
 			DiscordComponentBuilder buttons = BuildIssueButtons(issue);
@@ -443,7 +448,7 @@ namespace HordeServer.Discord.Notifications
 				// The channel keeps one message per issue, rewritten in place, with the history in its thread. The
 				// owner still gets their direct message - the thread is the shared record, not a substitute for
 				// telling the person who has to act.
-				await UpdateTriageThreadAsync(issue, triage, cancellationToken);
+				await UpdateTriageThreadAsync(issue, triage, spans, cancellationToken);
 
 				if (recipient != null)
 				{
@@ -455,7 +460,7 @@ namespace HordeServer.Discord.Notifications
 
 			if (recipient == null)
 			{
-				await SendAsync(triage, embed, null, buttons, ResolveTriageAliases(issue), cancellationToken);
+				await SendAsync(triage, embed, null, buttons, ResolveTriageAliases(issue, spans), cancellationToken);
 				return;
 			}
 
@@ -485,7 +490,7 @@ namespace HordeServer.Discord.Notifications
 		/// A link that is not a Discord one is left alone rather than replaced. That should not happen while the
 		/// gate above holds, but the cost of being wrong is a studio's Slack triage links being quietly destroyed.
 		/// </remarks>
-		async Task UpdateTriageThreadAsync(IIssue issue, IReadOnlyList<DiscordDestination> triage, CancellationToken cancellationToken)
+		async Task UpdateTriageThreadAsync(IIssue issue, IReadOnlyList<DiscordDestination> triage, IReadOnlyList<IIssueSpan> spans, CancellationToken cancellationToken)
 		{
 			DiscordMessage message = BuildIssueMessage(issue);
 
@@ -507,7 +512,7 @@ namespace HordeServer.Discord.Notifications
 				_logger.LogInformation("Issue {IssueId} already has a workflow thread at {Url}, which is not a "
 					+ "Discord link. Leaving it alone and posting without a thread.", issue.Id, issue.WorkflowThreadUrl);
 
-				await SendAsync(triage, BuildIssueEmbed(issue), null, BuildIssueButtons(issue), ResolveTriageAliases(issue), cancellationToken);
+				await SendAsync(triage, BuildIssueEmbed(issue), null, BuildIssueButtons(issue), ResolveTriageAliases(issue, spans), cancellationToken);
 				return;
 			}
 
@@ -727,11 +732,11 @@ namespace HordeServer.Discord.Notifications
 		/// and each may triage separately. Falls back to the stream's own triage channel, then to the job channel,
 		/// which is what <see cref="DiscordChannelResolver"/> does with anything unmapped.
 		/// </remarks>
-		IReadOnlyList<DiscordDestination> ResolveIssueChannels(IIssue issue)
+		IReadOnlyList<DiscordDestination> ResolveIssueChannels(IIssue issue, IReadOnlyList<IIssueSpan> spans)
 		{
 			List<string> channels = new List<string>();
 
-			foreach ((string? channel, string? _) in IssueTriageTargets(issue))
+			foreach ((string? channel, string? _) in IssueTriageTargets(issue, spans))
 			{
 				if (channel != null)
 				{
@@ -752,31 +757,64 @@ namespace HordeServer.Discord.Notifications
 		/// <c>triageAlias</c> is who to ping *in that workflow's channel*, and an issue spanning two streams can
 		/// legitimately reach two channels whose triage teams are different people.
 		/// </remarks>
-		IEnumerable<(string? Channel, string? Alias)> IssueTriageTargets(IIssue issue)
+		IEnumerable<(string? Channel, string? Alias)> IssueTriageTargets(IIssue issue, IReadOnlyList<IIssueSpan> spans)
 		{
 			BuildConfig buildConfig = _buildConfig.CurrentValue;
 
-			foreach (IIssueStream stream in issue.Streams)
+			// The workflow that triages this issue is named by the annotations on the step that failed - one workflow,
+			// not every workflow its stream happens to define. A stream with both a UGS workflow and a publish workflow
+			// triages a failure in whichever one owns it, and posting to both is how a triage channel gets muted.
+			// Epic reads the first span for exactly this; see SlackNotificationSink.NotifyIssueUpdatedAsync.
+			if (spans.Count > 0)
 			{
-				if (!buildConfig.TryGetStream(stream.StreamId, out StreamConfig? streamConfig))
+				IIssueSpan first = spans[0];
+				WorkflowId? workflowId = first.LastFailure.Annotations.WorkflowId;
+
+				if (workflowId != null
+					&& buildConfig.TryGetStream(first.StreamId, out StreamConfig? workflowStream)
+					&& workflowStream.TryGetWorkflow(workflowId.Value, out WorkflowConfig? workflow)
+					&& !String.IsNullOrEmpty(workflow.TriageChannel)
+					&& TriagesSeverity(workflow, issue.Severity))
+				{
+					yield return (workflow.TriageChannel, workflow.TriageAlias);
+				}
+			}
+
+			// Then, per span, the template's own triage channel if it has one and the stream's if it does not.
+			// Deliberately either/or rather than both: a template that sends its triage somewhere else means "not the
+			// stream channel", and adding the stream channel anyway is a copy nobody asked for.
+			foreach (IIssueSpan span in spans)
+			{
+				if (!buildConfig.TryGetStream(span.StreamId, out StreamConfig? streamConfig))
 				{
 					continue;
 				}
 
-				foreach (WorkflowConfig workflow in streamConfig.Workflows)
+				if (streamConfig.TryGetTemplate(span.TemplateRefId, out TemplateRefConfig? templateConfig)
+					&& !String.IsNullOrEmpty(templateConfig.TriageChannel))
 				{
-					if (!String.IsNullOrEmpty(workflow.TriageChannel))
-					{
-						yield return (workflow.TriageChannel, workflow.TriageAlias);
-					}
+					yield return (templateConfig.TriageChannel, null);
 				}
-
-				if (!String.IsNullOrEmpty(streamConfig.TriageChannel))
+				else if (!String.IsNullOrEmpty(streamConfig.TriageChannel))
 				{
 					yield return (streamConfig.TriageChannel, null);
 				}
 			}
 		}
+
+		/// <summary>
+		/// Whether a workflow wants to hear about an issue of this severity.
+		/// </summary>
+		/// <remarks>
+		/// Both settings default to true (<c>WorkflowConfig</c>), so this only ever withholds notifications a studio
+		/// has explicitly opted out of - a workflow set to triage errors only should not be sent warnings.
+		/// </remarks>
+		static bool TriagesSeverity(WorkflowConfig workflow, IssueSeverity severity) => severity switch
+		{
+			IssueSeverity.Warning => workflow.TriageWarnings,
+			IssueSeverity.Error => workflow.TriageErrors,
+			_ => true,
+		};
 
 		/// <summary>
 		/// Who to ping about an issue nobody has picked up, in the guild it is being posted to.
@@ -790,8 +828,9 @@ namespace HordeServer.Discord.Notifications
 		/// long, but that is driven by a timer Horde does not hand to a sink; this fires on updates only.
 		/// </remarks>
 		/// <param name="issue">Issue being announced.</param>
+		/// <param name="spans">The issue's spans, which name the workflow whose alias applies.</param>
 		/// <returns>The aliases to ping, which may be empty. Resolved to roles per destination when sending.</returns>
-		IReadOnlyList<string> ResolveTriageAliases(IIssue issue)
+		IReadOnlyList<string> ResolveTriageAliases(IIssue issue, IReadOnlyList<IIssueSpan> spans)
 		{
 			if (issue.OwnerId != null || issue.NominatedById != null || issue.ResolvedAt != null)
 			{
@@ -800,12 +839,12 @@ namespace HordeServer.Discord.Notifications
 
 			// Aliases rather than roles, because which role an alias means depends on the guild being posted to and
 			// one issue can reach channels in more than one. The send path knows the guild; this does not.
-			return [.. IssueTriageAliases(issue).Distinct(StringComparer.OrdinalIgnoreCase)];
+			return [.. IssueTriageAliases(issue, spans).Distinct(StringComparer.OrdinalIgnoreCase)];
 		}
 
-		IEnumerable<string> IssueTriageAliases(IIssue issue)
+		IEnumerable<string> IssueTriageAliases(IIssue issue, IReadOnlyList<IIssueSpan> spans)
 		{
-			foreach ((string? _, string? alias) in IssueTriageTargets(issue))
+			foreach ((string? _, string? alias) in IssueTriageTargets(issue, spans))
 			{
 				if (!String.IsNullOrEmpty(alias))
 				{

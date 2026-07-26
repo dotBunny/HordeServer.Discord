@@ -874,6 +874,23 @@ the triage channels of every workflow the issue's streams define one for, which 
 applied to a request to act rather than an announcement. `SendIssueReportAsync` is a digest and
 therefore the opposite: channel only, never a DM, and no buttons on it.
 
+> **Reversed 2026-07-26 (same day, after a live misroute).** "Every workflow the issue's streams
+> define one for" was wrong, and was reported as issues arriving in a UGS channel that should have gone
+> to a publish channel. An issue belongs to **one** workflow — the one named by the annotations on the
+> step that failed — and that is only reachable from the issue's *spans*, which `IIssue` does not carry.
+> The rule now mirrors Epic's (`SlackNotificationSink.cs:860-963`): one workflow from
+> `spans[0].LastFailure.Annotations.WorkflowId`, gated on `TriageWarnings`/`TriageErrors`; then per span
+> the template's triage channel *else* the stream's, never both. This is why `IHordeIssues` grew
+> `FindSpansAsync`, and it costs one Mongo read per issue notification — taken after the quarantine and
+> repeat-suppression checks so a notification nobody sees costs nothing.
+>
+> Fixed in the same pass: the **`issue/{id}` dashboard link**, which was not a route at all — the
+> dashboard opens an issue as a modal over an existing page, and an unmatched path redirects to
+> `/index` rather than failing, so it read as a link that did nothing. Now
+> `stream/{streamId}?tab=summary&issue={id}`. Epic anchors to the failing step's job instead, which the
+> spans lookup above now makes reachable; not taken, because the stream form is verified working and
+> changing it again would be churn.
+
 Three decisions worth recording:
 
 - **Repeated states are suppressed via `DiscordRepeatFilter`, not reposted.** Horde raises

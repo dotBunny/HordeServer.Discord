@@ -72,6 +72,22 @@ namespace HordeTestDoubles
 		/// </summary>
 		public FakeIssue Get(int issueId) => (FakeIssue)_issues[issueId];
 
+		readonly Dictionary<int, IReadOnlyList<IIssueSpan>> _spans = new Dictionary<int, IReadOnlyList<IIssueSpan>>();
+
+		/// <summary>
+		/// Gives an issue the spans that decide where it is routed.
+		/// </summary>
+		/// <remarks>
+		/// An issue with no spans registered reports none, which is the real behaviour for an issue whose spans have
+		/// been trimmed - and the case that falls through to the job channel.
+		/// </remarks>
+		/// <param name="issueId">Issue the spans belong to.</param>
+		/// <param name="spans">Spans to report.</param>
+		public void SetSpans(int issueId, params IIssueSpan[] spans) => _spans[issueId] = spans;
+
+		public Task<IReadOnlyList<IIssueSpan>> FindSpansAsync(int issueId, CancellationToken cancellationToken)
+			=> Task.FromResult(_spans.GetValueOrDefault(issueId, Array.Empty<IIssueSpan>()));
+
 		public Task<IIssue?> GetAsync(int issueId, CancellationToken cancellationToken)
 			=> Task.FromResult(_issues.GetValueOrDefault(issueId));
 

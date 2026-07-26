@@ -326,6 +326,23 @@ rebuild — a stale DLL against a newer server fails at plugin load rather than 
   normally. Discord will happily open that channel and *then* refuse the message with 50007 if the
   recipient does not accept DMs from server members, so a fallback hung off the channel lookup alone
   would silently drop notifications.
+- **Issue triage routing is decided by the issue's *spans*, not by `IIssue.Streams`.** A span names the
+  stream, the template, and the failing step whose annotations pick the workflow — and `IIssue` carries
+  none of that, only a flat list of streams. Guessing from that list is how the plugin ended up posting
+  to *every* workflow a stream defines instead of the one that owns the failure. Epic's three rules, all
+  in `SlackNotificationSink.cs:860-963`: **one** workflow, from `spans[0].LastFailure.Annotations.WorkflowId`
+  (`:871-877`); gated on `TriageWarnings` / `TriageErrors`, which both default to `true` (`:879`,
+  `WorkflowConfig.cs:51,54`); then per span the *template's* triage channel **else** the stream's — an
+  `else`, never both (`:921-936`). `IHordeIssues.FindSpansAsync` is what makes this reachable without
+  MongoDB. Note `DiscordRoutingReport` already validated template triage channels the plugin then never
+  used, so a green routing report was never evidence the routing was right.
+- **A `BuildConfig` is only usable after `PostLoad`, and `PostLoad` needs a `ComputeConfig`.**
+  `TryGetStream` reads a private lookup that nothing else fills, so a hand-built `BuildConfig` silently
+  finds no streams — which is why triage routing had no test coverage for four phases and the divergence
+  above went unnoticed. `BuildConfig.UpdateWorkspacesForPools` then does `plugins.OfType<ComputeConfig>().First()`
+  despite a comment claiming it skips when absent, so omitting it throws `Sequence contains no elements`
+  from inside `PostLoad`. `tools/HordeTestDoubles/BuildConfigFakes.cs` handles both. `StreamConfig.TryGetWorkflow`
+  and `TryGetTemplate` need none of this — each is a `FirstOrDefault` over a public list.
 - **The dashboard has no page for an issue, and a bad path redirects instead of failing.** There is no
   `issue/{id}` route — an issue opens as a *modal over an existing page*, so every issue link is some
   page plus `?issue={id}`. The route table is `HordeDashboard/src/App.tsx:142-178`, and its

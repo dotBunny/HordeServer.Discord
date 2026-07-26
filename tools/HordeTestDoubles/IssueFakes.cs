@@ -2,6 +2,10 @@
 
 using EpicGames.Horde.Commits;
 using EpicGames.Horde.Issues;
+using EpicGames.Horde.Jobs;
+using EpicGames.Horde.Jobs.Graphs;
+using EpicGames.Horde.Jobs.Templates;
+using EpicGames.Horde.Logs;
 using EpicGames.Horde.Streams;
 using EpicGames.Horde.Users;
 using HordeServer.Issues;
@@ -152,5 +156,91 @@ namespace HordeTestDoubles
 		public bool? ContainsFix { get; set; }
 
 		public bool? FixFailed { get; set; }
+	}
+
+	/// <summary>
+	/// One span of an issue - a stream, a template, and the step that failed.
+	/// </summary>
+	/// <remarks>
+	/// Only the three things routing reads are settable. Everything else throws rather than returning a plausible
+	/// default, so a test that starts depending on the rest fails loudly instead of asserting against invented data.
+	/// </remarks>
+	public sealed class FakeIssueSpan : IIssueSpan
+	{
+		/// <summary>
+		/// Constructor.
+		/// </summary>
+		/// <param name="streamId">Stream the failure was seen in.</param>
+		/// <param name="templateId">Template that ran it.</param>
+		/// <param name="workflowId">Workflow named by the failing step's annotations, if any.</param>
+		public FakeIssueSpan(string streamId, string templateId = "build", string? workflowId = null)
+		{
+			StreamId = new StreamId(streamId);
+			TemplateRefId = new TemplateId(templateId);
+			LastFailure = new FakeIssueStep(workflowId);
+		}
+
+		public StreamId StreamId { get; }
+
+		public TemplateId TemplateRefId { get; }
+
+		public IIssueStep LastFailure { get; }
+
+		public ObjectId Id => ObjectId.Empty;
+
+		public string StreamName => StreamId.ToString();
+
+		public string NodeName => "Compile";
+
+		public int IssueId { get; set; }
+
+		public bool PromoteByDefault => false;
+
+		public int? MaxSuspectRank => null;
+
+		public IIssueFingerprint Fingerprint => throw new NotSupportedException();
+
+		public IIssueStep? LastSuccess => null;
+
+		public IIssueStep FirstFailure => LastFailure;
+
+		public IIssueStep? NextSuccess => null;
+
+		public IReadOnlyList<IIssueSpanSuspect> Suspects => Array.Empty<IIssueSpanSuspect>();
+	}
+
+	/// <summary>
+	/// The failing step of a span, carrying the annotations that choose a triage workflow.
+	/// </summary>
+	public sealed class FakeIssueStep : IIssueStep
+	{
+		/// <summary>
+		/// Constructor.
+		/// </summary>
+		/// <param name="workflowId">Workflow this step's node is annotated with, if any.</param>
+		public FakeIssueStep(string? workflowId = null)
+			=> Annotations = new NodeAnnotations { WorkflowId = workflowId == null ? null : new WorkflowId(workflowId) };
+
+		public IReadOnlyNodeAnnotations Annotations { get; }
+
+		public ObjectId SpanId => ObjectId.Empty;
+
+		public IssueSeverity Severity => IssueSeverity.Error;
+
+		public string JobName => "Incremental Build";
+
+		public JobId JobId => default;
+
+		public JobStepBatchId BatchId => default;
+
+		public JobStepId StepId => default;
+
+		public DateTime StepTime => DateTime.UnixEpoch;
+
+		public bool PromoteByDefault => false;
+
+		public LogId? LogId => null;
+
+		public CommitIdWithOrder CommitId => throw new NotSupportedException();
 	}
 }
