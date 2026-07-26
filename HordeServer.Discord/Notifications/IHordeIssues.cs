@@ -81,6 +81,20 @@ namespace HordeServer.Discord.Notifications
 		/// <param name="cancellationToken">Cancellation token for the operation.</param>
 		/// <returns>True if the issue was updated.</returns>
 		Task<bool> SetRootCauseCategoryAsync(int issueId, UserId userId, string category, CancellationToken cancellationToken);
+
+		/// <summary>
+		/// Remembers where an issue's triage conversation lives.
+		/// </summary>
+		/// <remarks>
+		/// The whole persistent state of Discord triage, stored in Horde's own field rather than in a collection of
+		/// ours. **One field per issue, and the Slack sink writes it too** - which is why the caller is gated on
+		/// <see cref="DiscordServerConfig.EnableTriageThreads"/> and this method asks no questions.
+		/// </remarks>
+		/// <param name="issueId">Issue the thread belongs to.</param>
+		/// <param name="threadUrl">Link to the parent message, which is also the thread.</param>
+		/// <param name="cancellationToken">Cancellation token for the operation.</param>
+		/// <returns>True if the issue was updated.</returns>
+		Task<bool> SetWorkflowThreadUrlAsync(int issueId, Uri threadUrl, CancellationToken cancellationToken);
 	}
 
 	/// <summary>
@@ -154,6 +168,13 @@ namespace HordeServer.Discord.Notifications
 				issueId,
 				rootCauseCategory: category,
 				initiatedById: userId,
+				cancellationToken: cancellationToken);
+
+		/// <inheritdoc/>
+		public Task<bool> SetWorkflowThreadUrlAsync(int issueId, Uri threadUrl, CancellationToken cancellationToken)
+			=> _issues.UpdateIssueAsync(
+				issueId,
+				workflowThreadUrl: threadUrl,
 				cancellationToken: cancellationToken);
 	}
 }

@@ -67,6 +67,11 @@ namespace HordeTestDoubles
 			return issue;
 		}
 
+		/// <summary>
+		/// The issue as the fake holds it, for a test that wants to change it between notifications.
+		/// </summary>
+		public FakeIssue Get(int issueId) => (FakeIssue)_issues[issueId];
+
 		public Task<IIssue?> GetAsync(int issueId, CancellationToken cancellationToken)
 			=> Task.FromResult(_issues.GetValueOrDefault(issueId));
 
@@ -106,6 +111,25 @@ namespace HordeTestDoubles
 		public Task<bool> SetRootCauseCategoryAsync(int issueId, UserId userId, string category, CancellationToken cancellationToken)
 		{
 			Updates.Add(new HordeIssueUpdate("category", issueId, userId, Category: category));
+			return Task.FromResult(Succeeds);
+		}
+
+		/// <summary>
+		/// Thread urls that were written back, by issue.
+		/// </summary>
+		public Dictionary<int, Uri> ThreadUrls { get; } = new Dictionary<int, Uri>();
+
+		public Task<bool> SetWorkflowThreadUrlAsync(int issueId, Uri threadUrl, CancellationToken cancellationToken)
+		{
+			ThreadUrls[issueId] = threadUrl;
+
+			// Also reflected onto the issue, so a second notification sees what the first stored - which is the
+			// whole behaviour under test.
+			if (_issues.GetValueOrDefault(issueId) is FakeIssue issue)
+			{
+				issue.WorkflowThreadUrl = threadUrl;
+			}
+
 			return Task.FromResult(Succeeds);
 		}
 	}

@@ -1283,6 +1283,116 @@ namespace HordeServer.Discord.Tests.Notifications
 				+ "same sequence.");
 		}
 
+		[TestMethod]
+		public async Task TheFirstNotificationStartsAThreadAndRecordsWhereItIs()
+		{
+			Harness harness = new Harness(enableTriageThreads: true,
+				responses: [RecordingHttpHandler.Json(HttpStatusCode.OK, """{"id":"900000000000000001","channel_id":"100000000000000006"}""")]);
+
+			FakeIssue issue = harness.Issues.Add(IssueFakes.Issue(42, "Compile error"));
+
+			await harness.Processor.NotifyIssueUpdatedAsync(issue, default);
+
+			StringAssert.Contains(harness.Handler.Requests[0].Uri, $"channels/{JobChannel}/messages");
+			StringAssert.Contains(harness.Handler.Requests[1].Uri, "messages/900000000000000001/threads");
+
+			Assert.AreEqual(
+				$"https://discord.com/channels/{GuildId}/{JobChannel}/900000000000000001",
+				harness.Issues.ThreadUrls[42].ToString(),
+				"One link is the whole persistent state: the channel, the message to rewrite, and - because a thread "
+				+ "takes its source message's id - the thread to post into.");
+		}
+
+		[TestMethod]
+		public async Task TheNextNotificationRewritesTheMessageRatherThanPostingAnother()
+		{
+			Harness harness = new Harness(enableTriageThreads: true,
+				responses: [RecordingHttpHandler.Json(HttpStatusCode.OK, """{"id":"900000000000000001","channel_id":"100000000000000006"}""")]);
+
+			FakeIssue issue = harness.Issues.Add(IssueFakes.Issue(42, "Compile error"));
+
+			await harness.Processor.NotifyIssueUpdatedAsync(issue, default);
+
+			int afterFirst = harness.Handler.Requests.Count;
+			issue.ResolvedAt = new DateTime(2026, 7, 26, 11, 0, 0, DateTimeKind.Utc);
+
+			await harness.Processor.NotifyIssueUpdatedAsync(issue, default);
+
+			Assert.AreEqual("PATCH", harness.Handler.Requests[afterFirst].Method);
+			StringAssert.Contains(harness.Handler.Requests[afterFirst].Uri,
+				$"channels/{JobChannel}/messages/900000000000000001");
+		}
+
+		[TestMethod]
+		public async Task AndPostsWhatChangedIntoTheThread()
+		{
+			Harness harness = new Harness(enableTriageThreads: true,
+				responses: [RecordingHttpHandler.Json(HttpStatusCode.OK, """{"id":"900000000000000001","channel_id":"100000000000000006"}""")]);
+
+			FakeIssue issue = harness.Issues.Add(IssueFakes.Issue(42, "Compile error"));
+
+			await harness.Processor.NotifyIssueUpdatedAsync(issue, default);
+
+			int afterFirst = harness.Handler.Requests.Count;
+			issue.AcknowledgedAt = new DateTime(2026, 7, 26, 10, 0, 0, DateTimeKind.Utc);
+
+			await harness.Processor.NotifyIssueUpdatedAsync(issue, default);
+
+			// The thread id is the parent message id, so posting into the thread is posting to that channel.
+			StringAssert.Contains(harness.Handler.Requests[afterFirst + 1].Uri, "channels/900000000000000001/messages");
+			StringAssert.Contains(harness.Handler.Message(afterFirst + 1).GetProperty("content").GetString(), "Acknowledged");
+		}
+
+		[TestMethod]
+		public async Task ASlackThreadUrlIsLeftAlone()
+		{
+			Harness harness = new Harness(enableTriageThreads: true);
+
+			FakeIssue issue = harness.Issues.Add(IssueFakes.Issue(42, "Compile error"));
+			issue.WorkflowThreadUrl = new Uri("https://epicgames.slack.com/archives/C0832ESJUR5/p1700000000000000");
+
+			await harness.Processor.NotifyIssueUpdatedAsync(issue, default);
+
+			Assert.IsFalse(harness.Issues.ThreadUrls.ContainsKey(42),
+				"Overwriting it would silently destroy a studio's Slack triage links.");
+			Assert.IsFalse(harness.Handler.Requests.Any(x => x.Uri.Contains("/threads", StringComparison.Ordinal)));
+			StringAssert.Contains(harness.Handler.Requests[0].Uri, $"channels/{JobChannel}/messages");
+		}
+
+		[TestMethod]
+		public void ThreadsAreOffWhenSlackIsConfigured()
+			=> Assert.IsFalse(new Harness(slackToken: "xoxb-slack", enableTriageThreads: null).Processor.ThreadsEnabled,
+				"There is one WorkflowThreadUrl per issue and Slack writes it too, so unset means leave it alone.");
+
+		[TestMethod]
+		public void ThreadsAreOnByDefaultWithoutSlack()
+			=> Assert.IsTrue(new Harness(enableTriageThreads: null).Processor.ThreadsEnabled);
+
+		[TestMethod]
+		public void ThreadsCanBeForcedEitherWay()
+		{
+			Assert.IsTrue(new Harness(slackToken: "xoxb-slack", enableTriageThreads: true).Processor.ThreadsEnabled,
+				"Taking the field even alongside Slack has to be possible, just never the default.");
+			Assert.IsFalse(new Harness(enableTriageThreads: false).Processor.ThreadsEnabled);
+		}
+
+		[TestMethod]
+		public async Task AThreadThatCouldNotBeStartedIsNotRecorded()
+		{
+			Harness harness = new Harness(enableTriageThreads: true, responses:
+			[
+				RecordingHttpHandler.Json(HttpStatusCode.OK, """{"id":"900000000000000001","channel_id":"100000000000000006"}"""),
+				RecordingHttpHandler.Json(HttpStatusCode.Forbidden, """{"message":"Missing Permissions","code":50013}"""),
+			]);
+
+			FakeIssue issue = harness.Issues.Add(IssueFakes.Issue(42, "Compile error"));
+
+			await harness.Processor.NotifyIssueUpdatedAsync(issue, default);
+
+			Assert.IsFalse(harness.Issues.ThreadUrls.ContainsKey(42),
+				"Recording a thread that does not exist would send every later update into nothing.");
+		}
+
 		/// <summary>
 		/// The custom ids of every button on a recorded message, link buttons excluded.
 		/// </summary>
@@ -1316,10 +1426,16 @@ namespace HordeServer.Discord.Tests.Notifications
 		/// </summary>
 		sealed class Harness
 		{
-			public Harness(FakeUserCollection? users = null, DiscordConfig? config = null, string? botToken = "token", string? agentChannel = AgentChannel, string? slackToken = null, bool? enableDeepLinks = null, params HttpResponseMessage[] responses)
+			/// <param name="enableTriageThreads">
+			/// Off unless a test asks for it, unlike the plugin's own default. Threads change the shape of every
+			/// issue notification, and most of these tests are about the message rather than about where it lives.
+			/// Pass null to exercise the automatic behaviour.
+			/// </param>
+			public Harness(FakeUserCollection? users = null, DiscordConfig? config = null, string? botToken = "token", string? agentChannel = AgentChannel, string? slackToken = null, bool? enableDeepLinks = null, bool? enableTriageThreads = false, params HttpResponseMessage[] responses)
 			{
 				DiscordServerConfig serverConfig = new DiscordServerConfig
 				{
+					EnableTriageThreads = enableTriageThreads,
 					BotToken = botToken,
 					ConfigNotificationChannel = ConfigChannel,
 					JobNotificationChannel = JobChannel,
@@ -1360,11 +1476,17 @@ namespace HordeServer.Discord.Tests.Notifications
 					buildServerConfig,
 					new StaticOptionsMonitor<BuildConfig>(new BuildConfig()),
 					users ?? new FakeUserCollection(),
+					Issues,
 					new FakeServerInfo(),
 					NullLogger<DiscordNotificationProcessor>.Instance);
 			}
 
 			public RecordingHttpHandler Handler { get; }
+
+			/// <summary>
+			/// Stands in for Horde's issue service. Only read by triage threads, which record where they ended up.
+			/// </summary>
+			public FakeHordeIssues Issues { get; } = new FakeHordeIssues();
 
 			public DiscordNotificationProcessor Processor { get; }
 

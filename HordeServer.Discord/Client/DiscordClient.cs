@@ -38,6 +38,21 @@ namespace HordeServer.Discord.Client
 		/// </remarks>
 		public const string ApiBaseUrl = "https://discord.com/api/v10/";
 
+		/// <summary>
+		/// Maximum characters in a thread name.
+		/// </summary>
+		public const int ThreadNameLength = 100;
+
+		/// <summary>
+		/// How long a triage thread stays out of the archive with no activity, in minutes.
+		/// </summary>
+		/// <remarks>
+		/// A week, the longest Discord allows. Triage threads are read by whoever picks the issue up, which may be
+		/// after a weekend; an archived thread is still readable but drops out of the channel list, which is exactly
+		/// where somebody would look for it. Only 60, 1440, 4320 and 10080 are accepted.
+		/// </remarks>
+		public const int ThreadAutoArchiveMinutes = 10080;
+
 		static readonly JsonSerializerOptions s_jsonOptions = new JsonSerializerOptions
 		{
 			DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
@@ -215,6 +230,58 @@ namespace HordeServer.Discord.Client
 				cancellationToken);
 
 			return await IsSuccessAsync(response, "edit message {MessageId} in channel {ChannelId}", reference.MessageId, reference.ChannelId);
+		}
+
+		/// <summary>
+		/// Starts a thread hanging off a message.
+		/// </summary>
+		/// <remarks>
+		/// The thread Discord creates **takes the id of the message it was started from**, so the returned id is the
+		/// message id and posting into the thread is posting to a channel with that id. Nothing else needs storing.
+		///
+		/// Starting a thread on a message that already has one returns <c>160004</c>, which is not really an error
+		/// here - it means the thread exists, which is what the caller wanted - so it is reported as success.
+		/// </remarks>
+		/// <param name="channelId">Channel the message is in.</param>
+		/// <param name="messageId">Message to start the thread from.</param>
+		/// <param name="name">Thread name, truncated to Discord's limit.</param>
+		/// <param name="cancellationToken">Cancellation token for the operation.</param>
+		/// <returns>True if the thread exists afterwards.</returns>
+		public async Task<bool> CreateThreadFromMessageAsync(string channelId, string messageId, string name, CancellationToken cancellationToken)
+		{
+			string payload = JsonSerializer.Serialize(
+				new CreateThread
+				{
+					Name = DiscordEmbedLimits.Truncate(name, ThreadNameLength),
+					AutoArchiveDuration = ThreadAutoArchiveMinutes,
+				},
+				s_jsonOptions);
+
+			string path = $"channels/{channelId}/messages/{messageId}/threads";
+
+			using HttpResponseMessage response = await _rateLimiter.SendAsync(
+				DiscordRoute.CreateThreadFromMessage(channelId),
+				token => _httpClient.SendAsync(CreateRequest(HttpMethod.Post, path, payload), token),
+				cancellationToken);
+
+			if (response.IsSuccessStatusCode)
+			{
+				return true;
+			}
+
+			string body = await ReadBodyForLoggingAsync(response);
+
+			if (body.Contains("160004", StringComparison.Ordinal))
+			{
+				// "A thread has already been created for this message". Reaching here means two updates raced, which
+				// is normal on a busy issue, and the thread the caller wanted is there either way.
+				return true;
+			}
+
+			_logger.LogError("Discord API failed to start a thread on message {MessageId} in channel {ChannelId}: "
+				+ "{StatusCode} {Body}", messageId, channelId, (int)response.StatusCode, body);
+
+			return false;
 		}
 
 		/// <summary>
@@ -442,6 +509,18 @@ namespace HordeServer.Discord.Client
 		{
 			[JsonPropertyName("recipient_id")]
 			public string? RecipientId { get; set; }
+		}
+
+		/// <summary>
+		/// Request body for starting a thread from a message.
+		/// </summary>
+		sealed class CreateThread
+		{
+			[JsonPropertyName("name")]
+			public string? Name { get; set; }
+
+			[JsonPropertyName("auto_archive_duration")]
+			public int AutoArchiveDuration { get; set; }
 		}
 
 		/// <summary>

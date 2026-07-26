@@ -639,6 +639,9 @@ namespace DiscordSmoke
 				buildServerConfig,
 				new StaticOptionsMonitor<BuildConfig>(new BuildConfig()),
 				users,
+				// There is no Horde behind this tool, so a thread url written back goes nowhere. Harmless: the
+				// scenarios post to a mapped channel and the thread is created for real either way.
+				new FakeHordeIssues(),
 				new FakeServerInfo { DashboardUrl = settings.DashboardUrl },
 				loggerFactory.CreateLogger<DiscordNotificationProcessor>());
 		}

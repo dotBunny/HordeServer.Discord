@@ -352,6 +352,7 @@ namespace HordeServer.Discord.Tests.Notifications
 					buildServerConfig,
 					new StaticOptionsMonitor<BuildConfig>(new BuildConfig()),
 					users,
+					Issues,
 					new FakeServerInfo(),
 					NullLogger<DiscordNotificationProcessor>.Instance);
 

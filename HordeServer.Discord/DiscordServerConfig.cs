@@ -61,6 +61,24 @@ namespace HordeServer
 		public bool? EnableDeepLinks { get; set; }
 
 		/// <summary>
+		/// Whether issue triage keeps one message per issue in a thread, rather than posting a new one per change.
+		/// </summary>
+		/// <remarks>
+		/// Unset means *automatic*, and for the same reason as <see cref="EnableDeepLinks"/>: turning this on means
+		/// writing to <c>IIssue.WorkflowThreadUrl</c>, and there is **one of that field per issue** while the Slack
+		/// sink keeps its own triage thread permalink in it. Two sinks both writing it would leave a studio's Slack
+		/// triage links silently replaced by Discord ones, which is exactly the interference this plugin promises not
+		/// to cause.
+		///
+		/// So unset resolves to on only when the Build plugin has no <c>SlackToken</c> - when nothing else owns the
+		/// field. Set it to <c>true</c> to take the field even alongside Slack, or <c>false</c> to leave it alone.
+		///
+		/// With it off, issue notifications behave as they did before threads existed: a new message per state
+		/// change, with the repeat filter suppressing the ones that changed nothing.
+		/// </remarks>
+		public bool? EnableTriageThreads { get; set; }
+
+		/// <summary>
 		/// Channel to send job related notifications to. Multiple channels can be specified, separated by <c>;</c>.
 		/// </summary>
 		/// <remarks>

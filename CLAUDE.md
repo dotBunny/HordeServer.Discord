@@ -13,10 +13,10 @@ into a Horde server's application directory — no changes to Horde or to Unreal
 
 **The design and roadmap live in [`.claude/PLAN.md`](.claude/PLAN.md). Read it before doing
 substantive work** — it records the architecture investigation (with engine file/line references),
-the decisions taken and why, and the phase breakdown. Current status: **all seventeen `INotificationSink` members deliver**, verified
-against a real Discord server (2026-07-26), along with the gateway, interactive triage buttons and the
-hybrid Mark Fixed modal flow. What remains of Phase 4 is the triage *thread* shape (§3.3.6) and the
-Mongo message-state collection that edit-in-place needs.
+the decisions taken and why, and the phase breakdown. Current status: **Phases 0–4 complete and
+verified against a real Discord server** (2026-07-26). All seventeen `INotificationSink` members
+deliver; the gateway holds a session; triage buttons call Horde's `IssueService`; the Mark Fixed modal
+round-trips; and each issue keeps one message in a thread, rewritten as it changes.
 
 ## The two trees
 
@@ -273,6 +273,16 @@ rebuild — a stale DLL against a newer server fails at plugin load rather than 
   has no choice but to identify again. Deliberate hang-ups use `4000`
   (`DiscordGateway.ResumableCloseCode`). This fails silently — everything still works, it just quietly
   re-identifies every time and eats the daily session-start allowance.
+- **A thread created from a message has the *same id* as that message.** Verified live 2026-07-26, not
+  just read in the docs. It is what lets issue triage keep all its state in one URL — `DiscordMessageLink`
+  parses `channels/{guild}/{channel}/{message}` into the channel, the message to edit in place, and the
+  thread to post into — and it is why the planned Mongo message-state collection was dropped. Posting
+  "into a thread" is just posting to a channel whose id is the parent message's.
+- **`IIssue.WorkflowThreadUrl` has one slot and the Slack sink writes it too.** It is where Epic's sink
+  keeps its triage thread permalink. Taking it unconditionally would silently replace a studio's Slack
+  links, so `DiscordServerConfig.EnableTriageThreads` defaults to claiming it only when the Build
+  plugin has no `SlackToken` — the same shape as `EnableDeepLinks`, for the same reason. Anything in
+  that field that is not a `discord.com` link is left strictly alone.
 - **A modal can only be the *first* answer to an interaction.** Once anything has been sent — including
   a deferral — Discord refuses to open one, because there is nothing left for the dialog to attach to.
   That is directly at odds with `DiscordInteractionRouter`'s acknowledge-everything-first rule, which

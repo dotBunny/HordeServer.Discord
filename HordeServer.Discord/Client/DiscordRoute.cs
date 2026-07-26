@@ -50,6 +50,13 @@ namespace HordeServer.Discord.Client
 			=> new DiscordRoute("POST /users/@me/channels");
 
 		/// <summary>
+		/// Starting a thread from a message.
+		/// </summary>
+		/// <param name="channelId">Channel the message is in. A major parameter.</param>
+		public static DiscordRoute CreateThreadFromMessage(string channelId)
+			=> new DiscordRoute($"POST /channels/{channelId}/messages/:id/threads");
+
+		/// <summary>
 		/// Asking where the gateway is.
 		/// </summary>
 		public static DiscordRoute GetGatewayBot()

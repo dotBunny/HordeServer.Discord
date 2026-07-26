@@ -75,6 +75,7 @@ namespace HordeServer.Discord.Notifications
 		readonly BuildServerConfig _buildServerConfig;
 		readonly IOptionsMonitor<BuildConfig> _buildConfig;
 		readonly IUserCollection _hordeUsers;
+		readonly IHordeIssues _issues;
 		readonly IServerInfo _serverInfo;
 		readonly ILogger _logger;
 
@@ -89,9 +90,10 @@ namespace HordeServer.Discord.Notifications
 		/// <param name="buildServerConfig">Build plugin server configuration, to see whether Slack is also running.</param>
 		/// <param name="buildConfig">Build plugin global configuration, for per-stream notification channels.</param>
 		/// <param name="hordeUsers">Horde user lookup, for turning the user ids on a report into users.</param>
+		/// <param name="issues">Issue operations, used only to record where a triage thread ended up.</param>
 		/// <param name="serverInfo">Server information, for dashboard links.</param>
 		/// <param name="logger">Logger for delivery problems.</param>
-		public DiscordNotificationProcessor(DiscordClient client, DiscordChannelResolver channels, IDiscordUserResolver discordUsers, DiscordRepeatFilter repeats, IOptions<DiscordServerConfig> serverConfig, IOptions<BuildServerConfig> buildServerConfig, IOptionsMonitor<BuildConfig> buildConfig, IUserCollection hordeUsers, IServerInfo serverInfo, ILogger<DiscordNotificationProcessor> logger)
+		public DiscordNotificationProcessor(DiscordClient client, DiscordChannelResolver channels, IDiscordUserResolver discordUsers, DiscordRepeatFilter repeats, IOptions<DiscordServerConfig> serverConfig, IOptions<BuildServerConfig> buildServerConfig, IOptionsMonitor<BuildConfig> buildConfig, IUserCollection hordeUsers, IHordeIssues issues, IServerInfo serverInfo, ILogger<DiscordNotificationProcessor> logger)
 		{
 			_client = client;
 			_channels = channels;
@@ -101,6 +103,7 @@ namespace HordeServer.Discord.Notifications
 			_buildServerConfig = buildServerConfig.Value;
 			_buildConfig = buildConfig;
 			_hordeUsers = hordeUsers;
+			_issues = issues;
 			_serverInfo = serverInfo;
 			_logger = logger;
 		}
@@ -435,6 +438,21 @@ namespace HordeServer.Discord.Notifications
 			DiscordEmbedBuilder embed = BuildIssueEmbed(issue);
 			DiscordComponentBuilder buttons = BuildIssueButtons(issue);
 
+			if (ThreadsEnabled)
+			{
+				// The channel keeps one message per issue, rewritten in place, with the history in its thread. The
+				// owner still gets their direct message - the thread is the shared record, not a substitute for
+				// telling the person who has to act.
+				await UpdateTriageThreadAsync(issue, triage, cancellationToken);
+
+				if (recipient != null)
+				{
+					await SendToUsersAsync([recipient], [], embed, buttons, cancellationToken);
+				}
+
+				return;
+			}
+
 			if (recipient == null)
 			{
 				await SendAsync(triage, embed, null, buttons, cancellationToken);
@@ -443,6 +461,90 @@ namespace HordeServer.Discord.Notifications
 
 			await SendToUsersAsync([recipient], triage, embed, buttons, cancellationToken);
 		}
+
+		/// <summary>
+		/// Whether issue triage keeps a thread per issue.
+		/// </summary>
+		/// <remarks>
+		/// Unset means on only when the Build plugin has no Slack token, because turning it on means writing
+		/// <c>IIssue.WorkflowThreadUrl</c> and there is one of those per issue. See
+		/// <see cref="DiscordServerConfig.EnableTriageThreads"/>.
+		/// </remarks>
+		public bool ThreadsEnabled
+			=> _serverConfig.IsConfigured
+				&& (_serverConfig.EnableTriageThreads ?? String.IsNullOrEmpty(_buildServerConfig.SlackToken));
+
+		/// <summary>
+		/// Brings an issue's triage thread up to date, creating it if this is the first anyone has heard of it.
+		/// </summary>
+		/// <remarks>
+		/// Everything this needs is in <c>IIssue.WorkflowThreadUrl</c>: the channel, the message to rewrite, and -
+		/// because a thread takes the id of the message it was started from - the thread to post the change into.
+		/// See <see cref="DiscordMessageLink"/>.
+		///
+		/// A link that is not a Discord one is left alone rather than replaced. That should not happen while the
+		/// gate above holds, but the cost of being wrong is a studio's Slack triage links being quietly destroyed.
+		/// </remarks>
+		async Task UpdateTriageThreadAsync(IIssue issue, IReadOnlyList<DiscordDestination> triage, CancellationToken cancellationToken)
+		{
+			DiscordMessage message = BuildIssueMessage(issue);
+
+			if (DiscordMessageLink.TryParse(issue.WorkflowThreadUrl, out DiscordMessageLink? existing))
+			{
+				await _client.EditMessageAsync(existing.Reference, message, cancellationToken);
+
+				// The parent now shows the current state; the thread is what records how it got there.
+				await _client.CreateMessageAsync(
+					existing.ThreadId,
+					new DiscordMessageBuilder().WithContent(DescribeIssueChange(issue)).Build(),
+					cancellationToken);
+
+				return;
+			}
+
+			if (issue.WorkflowThreadUrl != null)
+			{
+				_logger.LogInformation("Issue {IssueId} already has a workflow thread at {Url}, which is not a "
+					+ "Discord link. Leaving it alone and posting without a thread.", issue.Id, issue.WorkflowThreadUrl);
+
+				await SendAsync(triage, BuildIssueEmbed(issue), null, BuildIssueButtons(issue), cancellationToken);
+				return;
+			}
+
+			DiscordDestination? destination = triage.FirstOrDefault();
+
+			if (destination?.GuildId == null)
+			{
+				_logger.LogDebug("No mapped triage channel for issue {IssueId}, so no thread was started.", issue.Id);
+				return;
+			}
+
+			DiscordMessageReference? posted = await _client.CreateMessageAsync(destination.ChannelId, message, cancellationToken);
+
+			if (posted == null)
+			{
+				return;
+			}
+
+			string name = $"Issue {issue.Id}: {(String.IsNullOrEmpty(issue.UserSummary) ? issue.Summary : issue.UserSummary)}";
+
+			if (!await _client.CreateThreadFromMessageAsync(destination.ChannelId, posted.MessageId, name, cancellationToken))
+			{
+				// The message is posted and useful on its own. Recording a thread url for a thread that does not
+				// exist would send every later update into nothing.
+				return;
+			}
+
+			await _issues.SetWorkflowThreadUrlAsync(
+				issue.Id,
+				new Uri(DiscordMessageLink.For(destination.GuildId, posted).ToString()),
+				cancellationToken);
+		}
+
+		/// <summary>
+		/// The line posted into a triage thread when an issue changes.
+		/// </summary>
+		static string DescribeIssueChange(IIssue issue) => $"**{DescribeIssueStatus(issue)}**";
 
 		/// <summary>
 		/// Posts the periodic summary of everything open in a workflow.

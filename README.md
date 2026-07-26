@@ -223,6 +223,7 @@ All under `Horde:Plugins:Discord` in `server.json`. Changing any of them require
 | `ApplicationId` | string | Your Discord application (client) id. Needed for slash commands and interactive components. |
 | `GuildId` | string | The Discord server the bot operates in. Only used for member lookup and command registration — posting uses channel ids directly. |
 | `EnableInteractions` | bool | Whether to connect to Discord's gateway for buttons and modals. Posting works without it. Defaults to `true`. |
+| `EnableTriageThreads` | bool | Whether issue triage keeps one message per issue in a thread, rewritten as the issue changes, instead of posting a new message per change. **Leave unset unless you mean it** — see below. |
 | `EnableDeepLinks` | bool | Whether the dashboard's "message these people" buttons should open Discord. Leave unset — see below. |
 | `JobNotificationChannel` | string | **Override.** Discord channel for job and step outcomes, `;`-separated, bypassing the routing map above. Normally unset. |
 | `AgentNotificationChannel` | string | Override for agent and session conflict reports. |
@@ -235,6 +236,21 @@ All under `Horde:Plugins:Discord` in `server.json`. Changing any of them require
 Both prefixes must be a **literal emoji character**, or a custom guild emoji written `<:name:id>`. A
 `:red_circle:` shortcode is not expanded by Discord for anything a bot posts, and will appear in the
 message as the text you typed.
+
+### Issue triage threads
+
+With `EnableTriageThreads` on, each issue gets **one message in the triage channel with a thread hanging
+off it**. The message is rewritten as the issue changes and the thread records how it got there, rather
+than the channel collecting a new message per change.
+
+Horde stores where that thread is, in the issue's own `WorkflowThreadUrl` field — and **there is one of
+those per issue, which Slack's notification sink also writes**. If both sinks claimed it, a studio's
+Slack triage links would be quietly replaced by Discord ones.
+
+So leaving it unset means *automatic*: threads are used only when the Build plugin has no `SlackToken`,
+which is exactly when nothing else owns the field. Set it to `true` to take the field even alongside
+Slack, or `false` to stay out of it. With threads off, issue notifications post a new message per state
+change, and repeats that changed nothing are suppressed.
 
 ### Dashboard deep links
 

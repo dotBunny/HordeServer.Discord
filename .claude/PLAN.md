@@ -1,11 +1,14 @@
 # Horde → Discord Notification Plugin — Investigation & Plan
 
-> **Status:** Phases 0–3 built (2026-07-25) and **verified against a real Discord server
-> (2026-07-26)**. Fifteen of the seventeen `INotificationSink` members deliver; only the two issue
-> members remain, and they are Phase 4 along with the gateway. All fifteen `tools/DiscordSmoke`
-> scenarios now post successfully to a live guild, including the DMs and the mention. That run found
-> two harness defects and one shipped bug — see Phase 3's note — which is the argument for having
-> built the tool. Next action is Phase 4, which needs the same Discord application.
+> **Status: Phases 0–4 complete**, built 2026-07-25/26 and **verified against a real Discord server**.
+> All seventeen `INotificationSink` members deliver. The gateway holds a session, triage buttons call
+> Horde's `IssueService`, the hybrid Mark Fixed modal round-trips, and each issue keeps one message in
+> a thread that is rewritten as it changes. What remains is the deliberate non-goals in §3.4 and the
+> `/link` slash command deferred in §7.
+>
+> Every phase gate found something the unit tests could not: emoji shortcodes Slack resolves and
+> Discord does not (Phase 3), a smoke tool structurally incapable of failing (Phase 3), and a modal
+> that cannot follow a deferral (Phase 4). Keep sending real messages.
 > **Written:** 2026-07-25, against the DETHOL source engine (UE 5.8).
 > All line references below point into `Engine/Source/Programs/Horde` in that engine — re-verify them
 > after an engine upgrade, since none of it is a stable public API.
@@ -826,7 +829,7 @@ and tested directly, which leaves those members as thin wrappers over covered co
 > A bot can only DM users who share a guild with it. Unmapped or un-DMable users must fall back to a
 > channel mention, never silently drop.
 
-### Phase 4 — Gateway + interactive issue triage
+### Phase 4 — Gateway + interactive issue triage ✅ **COMPLETE, VERIFIED AGAINST DISCORD 2026-07-26**
 `DiscordGateway` (identify / heartbeat with jitter / resume with session id + sequence / resumable
 vs. terminal close codes / backoff). `NotifyIssueUpdatedAsync` and `SendIssueReportAsync` building
 the triage thread (§3.3.6) with action-row buttons, plus DM variants carrying their own buttons.
@@ -905,8 +908,26 @@ routed but nothing acted on them — a press logged *"Nothing is registered for 
   Not to name anything — several `UpdateIssueAsync` parameters are `List<ObjectId>`, and the compiler
   resolves every parameter type to bind a call even when the arguments are left at their defaults.
 
-Still to come: the triage **thread** shape (§3.3.6), which the correction there shows needs no new
-storage, and the `WorkflowThreadUrl` gate that goes with it.
+**Triage threads landed 2026-07-26**, completing §3.3.6 with no new storage. One message per issue in
+the triage channel, rewritten in place as the issue changes, with a thread hanging off it recording
+how it got there; the owner still gets their direct message, because the thread is the shared record
+rather than a substitute for telling the person who has to act.
+
+**The load-bearing fact was verified live, not taken from the docs:** a thread created from a message
+has the *same id* as that message. Posting a message to the smoke channel produced message
+`1530953829321937029` and thread `1530953829321937029`, parented to the channel, auto-archiving at
+10080 minutes. That is what makes `DiscordMessageLink` — `channels/{guild}/{channel}/{message}` — a
+complete record: the channel, the message to edit, and the thread to post into, all in one URL, which
+is exactly the shape of the field Horde already keeps.
+
+`DiscordServerConfig.EnableTriageThreads` is the gate agreed above, and behaves like `EnableDeepLinks`:
+unset means claim `WorkflowThreadUrl` only when the Build plugin has no `SlackToken`. A value in that
+field that is not a `discord.com` link is left strictly alone and the notification falls back to a
+flat post — the cost of being wrong there is a studio's Slack triage links being destroyed, which is
+worth a branch.
+
+Phase 4 is complete. What remains across the whole plan is the deliberate non-goals in §3.4 and the
+`/link` slash command deferred in §7.
 
 Interaction handler mapping component `custom_id`s to the same `IssueService` calls the Slack sink
 makes — `ack` / `accept` / `decline`, in both DM and channel flavours (Slack keeps two handlers,
