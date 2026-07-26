@@ -27,8 +27,9 @@ namespace HordeServer.Discord.Notifications
 	/// makes it tractable to diff against <see cref="INotificationSink"/> after an engine upgrade. Keep members in
 	/// interface order for the same reason.
 	///
-	/// As of Phase 1 the job and step members deliver; issues, farm operations and links do not. See
-	/// <c>.claude/PLAN.md</c> section 5 for the phase breakdown.
+	/// As of Phase 2 every broadcast member delivers - jobs, steps, configuration updates, agent and device reports
+	/// and test health. Issues and the interactive triage that goes with them do not, and neither do the link
+	/// members. See <c>.claude/PLAN.md</c> section 5 for the phase breakdown.
 	/// </remarks>
 	public sealed class DiscordNotificationSink : INotificationSink
 	{
@@ -116,56 +117,36 @@ namespace HordeServer.Discord.Notifications
 
 		/// <inheritdoc/>
 		public Task NotifyConfigUpdateAsync(ConfigUpdateInfo info, CancellationToken cancellationToken)
-		{
-			_logger.LogDebug("[Discord] ConfigUpdate");
-			return Task.CompletedTask;
-		}
+			=> _processor.NotifyConfigUpdateAsync(info, cancellationToken);
 
 		/// <inheritdoc/>
 		public Task NotifyConfigUpdateFailureAsync(string errorMessage, string fileName, int? change = null, IUser? author = null, string? description = null, CancellationToken cancellationToken = default)
-		{
-			_logger.LogDebug("[Discord] ConfigUpdateFailure ({FileName})", fileName);
-			return Task.CompletedTask;
-		}
+			=> _processor.NotifyConfigUpdateFailureAsync(errorMessage, fileName, change, author, description, cancellationToken);
 
 		#endregion
 
 		#region Farm operations
 
 		/// <inheritdoc/>
+		/// <remarks>Posted to the device channel naming the user until Phase 3 can DM them.</remarks>
 		public Task NotifyDeviceServiceAsync(string message, IDevice? device = null, IDevicePool? pool = null, StreamConfig? streamConfig = null, IJob? job = null, IJobStep? step = null, INode? node = null, IUser? user = null, CancellationToken cancellationToken = default)
-		{
-			_logger.LogDebug("[Discord] DeviceService");
-			return Task.CompletedTask;
-		}
+			=> _processor.NotifyDeviceServiceAsync(message, device, pool, streamConfig, job, step, node, user, cancellationToken);
 
 		/// <inheritdoc/>
 		public Task SendDeviceIssueReportAsync(DeviceIssueReport report, CancellationToken cancellationToken)
-		{
-			_logger.LogDebug("[Discord] DeviceIssueReport");
-			return Task.CompletedTask;
-		}
+			=> _processor.SendDeviceIssueReportAsync(report, cancellationToken);
 
 		/// <inheritdoc/>
 		public Task SendAgentReportAsync(AgentReport report, CancellationToken cancellationToken)
-		{
-			_logger.LogDebug("[Discord] AgentReport");
-			return Task.CompletedTask;
-		}
+			=> _processor.SendAgentReportAsync(report, cancellationToken);
 
 		/// <inheritdoc/>
 		public Task SendSessionConflictReportAsync(IReadOnlyList<(AgentId Id, int Count)> conflicts, CancellationToken cancellationToken)
-		{
-			_logger.LogDebug("[Discord] SessionConflictReport ({Count} agents)", conflicts.Count);
-			return Task.CompletedTask;
-		}
+			=> _processor.SendSessionConflictReportAsync(conflicts, cancellationToken);
 
 		/// <inheritdoc/>
 		public Task NotifyTestHealthReportAsync(ITestHealthReport report, string recipient, string[]? carbonCopies, CancellationToken cancellationToken)
-		{
-			_logger.LogDebug("[Discord] TestHealthReport (recipient {Recipient})", recipient);
-			return Task.CompletedTask;
-		}
+			=> _processor.NotifyTestHealthReportAsync(report, recipient, carbonCopies, cancellationToken);
 
 		#endregion
 

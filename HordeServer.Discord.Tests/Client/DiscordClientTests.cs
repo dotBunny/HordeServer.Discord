@@ -1,7 +1,6 @@
 // Copyright (c) 2026 dotBunny Inc. See the LICENSE file in the project root for more information.
 
 using System.Net;
-using System.Text;
 using System.Text.Json;
 using HordeServer.Discord.Client;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -18,7 +17,7 @@ namespace HordeServer.Discord.Tests.Client
 		[TestMethod]
 		public async Task ApiVersionIsPinnedInThePath()
 		{
-			StubHandler handler = new StubHandler(Json(HttpStatusCode.OK, """{"id":"9","channel_id":"5"}"""));
+			RecordingHttpHandler handler = new RecordingHttpHandler(Json(HttpStatusCode.OK, """{"id":"9","channel_id":"5"}"""));
 			DiscordClient client = Create(handler);
 
 			await client.CreateMessageAsync("5", new DiscordMessageBuilder().WithContent("hi").Build(), CancellationToken.None);
@@ -30,7 +29,7 @@ namespace HordeServer.Discord.Tests.Client
 		[TestMethod]
 		public async Task BotTokenIsSentWithTheBotPrefix()
 		{
-			StubHandler handler = new StubHandler(Json(HttpStatusCode.OK, """{"id":"9"}"""));
+			RecordingHttpHandler handler = new RecordingHttpHandler(Json(HttpStatusCode.OK, """{"id":"9"}"""));
 			DiscordClient client = Create(handler, botToken: "abc123");
 
 			await client.CreateMessageAsync("5", new DiscordMessageBuilder().WithContent("hi").Build(), CancellationToken.None);
@@ -42,7 +41,7 @@ namespace HordeServer.Discord.Tests.Client
 		[TestMethod]
 		public async Task CreateMessageReturnsSomethingEditable()
 		{
-			StubHandler handler = new StubHandler(Json(HttpStatusCode.OK, """{"id":"999","channel_id":"5"}"""));
+			RecordingHttpHandler handler = new RecordingHttpHandler(Json(HttpStatusCode.OK, """{"id":"999","channel_id":"5"}"""));
 			DiscordClient client = Create(handler);
 
 			DiscordMessageReference? reference = await client.CreateMessageAsync("5", new DiscordMessageBuilder().Build(), CancellationToken.None);
@@ -55,7 +54,7 @@ namespace HordeServer.Discord.Tests.Client
 		[TestMethod]
 		public async Task PayloadCarriesContentEmbedsAndMentionPolicy()
 		{
-			StubHandler handler = new StubHandler(Json(HttpStatusCode.OK, """{"id":"9"}"""));
+			RecordingHttpHandler handler = new RecordingHttpHandler(Json(HttpStatusCode.OK, """{"id":"9"}"""));
 			DiscordClient client = Create(handler);
 
 			DiscordMessage message = new DiscordMessageBuilder()
@@ -77,7 +76,7 @@ namespace HordeServer.Discord.Tests.Client
 		[TestMethod]
 		public async Task NullPropertiesAreLeftOutOfThePayload()
 		{
-			StubHandler handler = new StubHandler(Json(HttpStatusCode.OK, """{"id":"9"}"""));
+			RecordingHttpHandler handler = new RecordingHttpHandler(Json(HttpStatusCode.OK, """{"id":"9"}"""));
 			DiscordClient client = Create(handler);
 
 			await client.CreateMessageAsync("5", new DiscordMessageBuilder().WithContent("text only").Build(), CancellationToken.None);
@@ -91,7 +90,7 @@ namespace HordeServer.Discord.Tests.Client
 		[TestMethod]
 		public async Task EditUsesPatchAgainstTheMessagePath()
 		{
-			StubHandler handler = new StubHandler(new HttpResponseMessage(HttpStatusCode.OK));
+			RecordingHttpHandler handler = new RecordingHttpHandler(new HttpResponseMessage(HttpStatusCode.OK));
 			DiscordClient client = Create(handler);
 
 			bool edited = await client.EditMessageAsync(new DiscordMessageReference("5", "999"), new DiscordMessageBuilder().Build(), CancellationToken.None);
@@ -104,7 +103,7 @@ namespace HordeServer.Discord.Tests.Client
 		[TestMethod]
 		public async Task FailureIsReportedRatherThanThrown()
 		{
-			StubHandler handler = new StubHandler(Json(HttpStatusCode.Forbidden, """{"message":"Missing Permissions","code":50013}"""));
+			RecordingHttpHandler handler = new RecordingHttpHandler(Json(HttpStatusCode.Forbidden, """{"message":"Missing Permissions","code":50013}"""));
 			DiscordClient client = Create(handler);
 
 			DiscordMessageReference? reference = await client.CreateMessageAsync("5", new DiscordMessageBuilder().Build(), CancellationToken.None);
@@ -117,7 +116,7 @@ namespace HordeServer.Discord.Tests.Client
 		[TestMethod]
 		public async Task ThrottledRequestIsRetriedByTheLimiter()
 		{
-			StubHandler handler = new StubHandler(
+			RecordingHttpHandler handler = new RecordingHttpHandler(
 				Throttled("0.5"),
 				Json(HttpStatusCode.OK, """{"id":"9","channel_id":"5"}"""));
 
@@ -134,7 +133,7 @@ namespace HordeServer.Discord.Tests.Client
 		[TestMethod]
 		public async Task MalformedResponseDoesNotThrow()
 		{
-			StubHandler handler = new StubHandler(Json(HttpStatusCode.OK, "not json at all"));
+			RecordingHttpHandler handler = new RecordingHttpHandler(Json(HttpStatusCode.OK, "not json at all"));
 			DiscordClient client = Create(handler);
 
 			DiscordMessageReference? reference = await client.CreateMessageAsync("5", new DiscordMessageBuilder().Build(), CancellationToken.None);
@@ -142,7 +141,7 @@ namespace HordeServer.Discord.Tests.Client
 			Assert.IsNull(reference);
 		}
 
-		static DiscordClient Create(StubHandler handler, string botToken = "token", IDiscordClock? clock = null)
+		static DiscordClient Create(RecordingHttpHandler handler, string botToken = "token", IDiscordClock? clock = null)
 		{
 			DiscordServerConfig serverConfig = new DiscordServerConfig { BotToken = botToken };
 			DiscordRateLimiter rateLimiter = new DiscordRateLimiter(NullLogger.Instance, clock ?? new FakeDiscordClock());
@@ -151,10 +150,7 @@ namespace HordeServer.Discord.Tests.Client
 		}
 
 		static HttpResponseMessage Json(HttpStatusCode statusCode, string body)
-			=> new HttpResponseMessage(statusCode)
-			{
-				Content = new StringContent(body, Encoding.UTF8, "application/json"),
-			};
+			=> RecordingHttpHandler.Json(statusCode, body);
 
 		static HttpResponseMessage Throttled(string resetAfter)
 		{
@@ -162,31 +158,5 @@ namespace HordeServer.Discord.Tests.Client
 			response.Headers.TryAddWithoutValidation("X-RateLimit-Reset-After", resetAfter);
 			return response;
 		}
-
-		/// <summary>
-		/// Records what was sent and hands back canned responses in order.
-		/// </summary>
-		sealed class StubHandler : HttpMessageHandler
-		{
-			readonly Queue<HttpResponseMessage> _responses;
-
-			public StubHandler(params HttpResponseMessage[] responses)
-				=> _responses = new Queue<HttpResponseMessage>(responses);
-
-			public List<RecordedRequest> Requests { get; } = new List<RecordedRequest>();
-
-			protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
-			{
-				Requests.Add(new RecordedRequest(
-					request.Method.Method,
-					request.RequestUri?.ToString() ?? String.Empty,
-					request.Headers.Authorization?.ToString(),
-					request.Content == null ? null : await request.Content.ReadAsStringAsync(cancellationToken)));
-
-				return _responses.Count > 0 ? _responses.Dequeue() : new HttpResponseMessage(HttpStatusCode.OK);
-			}
-		}
-
-		sealed record RecordedRequest(string Method, string Uri, string? Authorization, string? Body);
 	}
 }

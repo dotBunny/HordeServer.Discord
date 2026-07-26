@@ -51,6 +51,11 @@ namespace HordeServer
 				sp.GetRequiredService<ILogger<DiscordClient>>()));
 
 			serviceCollection.AddSingleton<DiscordChannelResolver>();
+
+			// A singleton on purpose: it exists to remember what has already been said, which a per-request instance
+			// could not do. Constructed by hand only so the clock stays an optional constructor parameter, which is
+			// what lets the tests drive expiry without waiting a week.
+			serviceCollection.AddSingleton<DiscordRepeatFilter>(_ => new DiscordRepeatFilter());
 			serviceCollection.AddSingleton<DiscordNotificationProcessor>();
 
 			// Names every Horde channel with no Discord mapping, at startup and on every config reload. Both sides

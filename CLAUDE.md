@@ -13,9 +13,9 @@ into a Horde server's application directory — no changes to Horde or to Unreal
 
 **The design and roadmap live in [`.claude/PLAN.md`](.claude/PLAN.md). Read it before doing
 substantive work** — it records the architecture investigation (with engine file/line references),
-the decisions taken and why, and the phase breakdown. Current status: **Phase 0 complete** (plugin
-loads and is wired into the notification pipeline; sends nothing yet). Phase 1 is the REST client and
-job/step outcomes.
+the decisions taken and why, and the phase breakdown. Current status: **Phases 0–2 complete** — every
+broadcast member of `INotificationSink` delivers, formatting unverified against a real Discord server.
+Phase 3 is users, mentions and DMs; Phase 4 is the gateway and interactive issue triage.
 
 ## The two trees
 
@@ -74,7 +74,7 @@ builds fail with MSB4126 even when the project itself is configured correctly.
 The build should be **clean with zero warnings** — `GenerateDocumentationFile` is on, so every public
 member needs an XML doc comment. Keep it that way.
 
-Output is a single `HordeServer.Discord.dll` (~60 KB at Phase 1). If engine assemblies ever appear in
+Output is a single `HordeServer.Discord.dll` (~97 KB at Phase 2). If engine assemblies ever appear in
 `bin/`, a `<Private>false</Private>` is missing from a `<Reference>` — `DropIsASingleAssembly` in the
 test suite guards this.
 
@@ -105,9 +105,15 @@ dotnet run --project tools/PluginProbe -c Development
 Both take the server directory from the build-time `$(HordeBinDir)` or `HORDE_BIN_DIR` (the probe also
 accepts argv[0]), so on a configured machine neither needs arguments.
 
-Two naming notes. `PluginProbe` is deliberately **not** named `HordeServer.*`, so it can never be
-mistaken for a plugin. `HordeServer.Discord.Tests.dll` *does* match that pattern, exactly as Epic's own
-test assemblies do — harmless because it is never deployed, but never copy it beside the server.
+Two naming notes. Nothing under `tools/` is named `HordeServer.*` — neither `PluginProbe` nor
+`HordeTestDoubles` — so neither can ever be mistaken for a plugin. `HordeServer.Discord.Tests.dll`
+*does* match that pattern, exactly as Epic's own test assemblies do — harmless because it is never
+deployed, but never copy it beside the server.
+
+`tools/HordeTestDoubles` is the one project with `GenerateDocumentationFile` off. Everything in it
+exists to satisfy an engine interface member for member and most of it returns a constant or throws;
+`PluginProbe` keeps documentation on for the opposite reason, since someone reading a red test ends up
+in its types.
 
 ## Architecture
 
@@ -124,8 +130,14 @@ test assemblies do — harmless because it is never deployed, but never copy it 
   the processor or logs — and keep members in interface order; both are what make diffing against the
   interface tractable when Epic changes it.
 - **`Notifications/DiscordNotificationProcessor`** — all the formatting. Split out so the sink stays
-  diffable, mirroring how the Experimental plugin splits its Slack sink from its processor.
-  `SendAsync` is its single exit point; everything goes through it.
+  diffable, mirroring how the Experimental plugin splits its Slack sink from its processor. Its
+  `#region`s mirror the sink's, so the two files read side by side. `SendAsync` is its single exit
+  point; everything goes through it, including the single-destination `SendToAsync`.
+- **`Notifications/DiscordRepeatFilter`** — what has already been announced, keyed by event id and
+  state digest. Some notifications describe a *state* rather than an event and arrive on a ticker; a
+  config failure would otherwise be reposted every pass. It also gates the recovery messages, which are
+  only sent to a channel that heard about the problem. In memory and bounded; the persistent
+  message-state collection is Phase 4. Rationale in `PLAN.md` §5, Phase 2.
 - **`Notifications/DiscordChannelResolver`** — all the routing, and the only place that decides where a
   message goes. Horde already resolved which channel a notification belongs in and hands us a **Slack
   channel id**; this translates that to a Discord guild and channel via the map in `DiscordConfig`.
@@ -175,6 +187,16 @@ rebuild — a stale DLL against a newer server fails at plugin load rather than 
   cannot load and the whole test method is **silently dropped** — absent from the run, with the summary
   still green. Pass a `string` or `int` and convert in the test body, which runs after initialization.
   Caught once already with `LabelOutcome`; a green `dotnet test` will not warn you.
+- **Nor may the test assembly *declare* a type that implements an engine interface.** Same root cause,
+  louder symptom: discovery calls `Module.GetTypes()`, which resolves the base types and interfaces of
+  every type the assembly defines, and the whole run dies with "Unable to load one or more of the
+  requested types" before a single test executes. Test doubles for `IUser`, `IServerInfo`,
+  `IUserCollection`, `ITestHealthReport` and friends therefore live in **`tools/HordeTestDoubles`** and
+  are referenced from the tests, where they resolve lazily at method-JIT time. Add new fakes there, not
+  beside the tests.
+- **`AgentId` upper-cases whatever it is given.** `new AgentId("render-01").ToString()` is
+  `RENDER-01`, and that is what belongs in a dashboard link — the constructor also rewrites `.` and
+  rejects some inputs outright. Do not assume a round trip.
 - **The `HordeBinDir` validation target must run `BeforeTargets="ResolveAssemblyReferences"`.** At
   `BeforeCompile` it fires *after* MSBuild has already emitted MSB3245 warnings for every engine
   reference, burying the actual explanation.

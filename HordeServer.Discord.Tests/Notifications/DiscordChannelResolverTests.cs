@@ -4,9 +4,9 @@ using EpicGames.Horde.Jobs;
 using HordeServer.Acls;
 using HordeServer.Discord.Notifications;
 using HordeServer.Plugins;
+using HordeTestDoubles;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
-using Microsoft.Extensions.Primitives;
 
 namespace HordeServer.Discord.Tests.Notifications
 {
@@ -262,27 +262,5 @@ namespace HordeServer.Discord.Tests.Notifications
 				Options.Create(serverConfig ?? new DiscordServerConfig()),
 				Options.Create(buildServerConfig ?? new BuildServerConfig()),
 				NullLogger<DiscordChannelResolver>.Instance);
-
-		/// <summary>
-		/// An options monitor over a value that never changes.
-		/// </summary>
-		sealed class StaticOptionsMonitor<T> : IOptionsMonitor<T>
-		{
-			public StaticOptionsMonitor(T value) => CurrentValue = value;
-
-			public T CurrentValue { get; }
-
-			public T Get(string? name) => CurrentValue;
-
-			public IDisposable OnChange(Action<T, string?> listener) => NullChangeToken.Disposable;
-
-			sealed class NullChangeToken : IDisposable
-			{
-				public static IDisposable Disposable { get; } = new NullChangeToken();
-
-				public void Dispose()
-				{ }
-			}
-		}
 	}
 }

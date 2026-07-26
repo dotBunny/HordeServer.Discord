@@ -17,4 +17,12 @@
   <!-- Human-facing front end for the load probe the tests run; shares its implementation. -->
   <Project Path="tools/PluginProbe/PluginProbe.csproj" />
 
+  <!--
+    Stand-ins for the Horde types a notification arrives with. In their own assembly because MSTest resolves the
+    base types of everything the test assembly *declares* during discovery - before the module initializer has
+    installed the engine assembly resolver - so a fake that implements an engine interface cannot live beside the
+    tests that use it. Same failure mode as the [DataRow] rule in CLAUDE.md, one step further along.
+  -->
+  <Project Path="tools/HordeTestDoubles/HordeTestDoubles.csproj" />
+
 </Solution>

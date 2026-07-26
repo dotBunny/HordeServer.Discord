@@ -1,8 +1,9 @@
 # Horde → Discord Notification Plugin — Investigation & Plan
 
-> **Status:** Phase 0 and Phase 1 built (2026-07-25). Nothing has been sent to a real Discord server
-> yet — no application, bot token or guild exists — so message formatting is unverified. Next action
-> is Phase 2 (§5), or standing up a Discord application to verify Phase 1 end to end.
+> **Status:** Phases 0, 1 and 2 built (2026-07-25). Every broadcast member of `INotificationSink` now
+> delivers; issues, interactivity and user targeting remain. Nothing has been sent to a real Discord
+> server yet — no application, bot token or guild exists — so message formatting is unverified. Next
+> action is Phase 3 (§5), or standing up a Discord application to verify what exists end to end.
 > **Written:** 2026-07-25, against the DETHOL source engine (UE 5.8).
 > All line references below point into `Engine/Source/Programs/Horde` in that engine — re-verify them
 > after an engine upgrade, since none of it is a stable public API.
@@ -448,9 +449,13 @@ HordeServer.Discord/                         (this repo)
 │  │                                          -> Discord channel map (§3.3.2), validated in PostLoad
 │  ├─ DiscordChannelMapping.cs            ✅ one entry in that map: label, guild, channel
 │  ├─ Notifications/
-│  │  ├─ DiscordNotificationSink.cs       ✅ the 17 INotificationSink members; jobs/steps forward to
-│  │  │                                      the processor, the rest still log-only
-│  │  ├─ DiscordNotificationProcessor.cs  ✅ formatting + routing (the ExperimentalSlack… pattern)
+│  │  ├─ DiscordNotificationSink.cs       ✅ the 17 INotificationSink members; everything except the
+│  │  │                                      two issue members and the two link members forwards to
+│  │  │                                      the processor
+│  │  ├─ DiscordNotificationProcessor.cs  ✅ formatting + routing (the ExperimentalSlack… pattern),
+│  │  │                                      grouped in regions matching the sink's own grouping
+│  │  ├─ DiscordRepeatFilter.cs           ✅ what has already been said, so a condition that persists
+│  │  │                                      is announced once and its recovery pairs with it
 │  │  ├─ DiscordChannelResolver.cs        ✅ Slack channel id -> Discord guild+channel (§3.3.2),
 │  │  │                                      with the catch-all fallback and warn-once
 │  │  ├─ DiscordChannelIds.cs             ✅ tells Slack ids and Discord snowflakes apart, which is
@@ -475,6 +480,12 @@ HordeServer.Discord/                         (this repo)
 │                                            ServerApp.CreatePluginCollection without Mongo/Redis.
 │                                            Now a shared library with a console front end; the
 │                                            tests run the same Probe.Run and assert on its result
+├─ tools/HordeTestDoubles/                ✅ stand-ins for the Horde types a notification arrives
+│                                            with. Its own assembly because MSTest resolves the base
+│                                            types of everything the *test* assembly declares during
+│                                            discovery, before the module initializer has installed
+│                                            the engine assembly resolver - so a fake implementing an
+│                                            engine interface cannot live beside its tests
 └─ HordeServer.Discord.Tests/             ✅ MSTest, mirroring HordeServer.Experimental.Tests.
                                              Deploys the plugin into $(HordeBinDir) itself, then
                                              probes - no copy step to forget
@@ -631,10 +642,45 @@ Not yet verified: anything about the messages themselves. No Discord application
 message has ever been sent. Formatting, colours, embed rendering and channel permissions are all
 unexercised.
 
-### Phase 2 — Remaining broadcast notifications
+### Phase 2 — Remaining broadcast notifications ✅ **CODE COMPLETE, UNVERIFIED AGAINST DISCORD**
 `NotifyConfigUpdateAsync` / `NotifyConfigUpdateFailureAsync`, `SendAgentReportAsync`,
 `NotifyDeviceServiceAsync`, `SendDeviceIssueReportAsync`, `SendSessionConflictReportAsync`,
 `NotifyTestHealthReportAsync`. All channel-post, no interactivity — mostly formatting work.
+
+Built 2026-07-25. Four things came out of it that were not in the plan:
+
+- **`DiscordRepeatFilter`** — an in-memory, expiring, capacity-bounded map of event id to state digest.
+  Not anticipated, but not optional either: `NotifyConfigUpdateAsync` fires on *every* pass of Horde's
+  config ticker, including every pass while a file stays broken, so a sink that posts unconditionally
+  turns one unclosed brace into a channel full of identical messages. Slack solves it with a digest in
+  the Mongo message-state collection; this is the same idea without the persistence, which is only
+  needed for the *other* half of what Slack's collection does (editing a message already posted). It
+  also drives the recovery messages: "configuration update succeeded" and "test health recovered" are
+  sent only to a channel that was told about the problem. Folds into the Phase 4 collection when that
+  arrives. Cost of being in memory: a restart re-announces a still-broken config once, which is
+  arguably correct.
+- **`IUserCollection` is now injected into the processor.** `NotifyTestHealthReportAsync` carries its
+  carbon-copied owners as `UserId` strings, and dropping them would lose the only thing on that report
+  that says whose test it is. It resolves to `IUser`, which `SendAsync` already knows how to name in
+  plain text, so Phase 3 swaps names for mentions at one site rather than reworking this.
+- **`NotifyDeviceServiceAsync` departs from Slack.** Slack sends it as a DM and sends *nothing at all*
+  when it cannot identify the user — and since both in-tree callers pass a user, the rich attachment
+  branch in `SendDeviceServiceMessageAsync` is unreachable. Ours posts to the device channel naming the
+  person, matching the interim the job members already take. Phase 3 turns it into a DM with the
+  channel post as the fallback for an unmapped user.
+- **Test health is keyed on `(StreamId, TestId)`, not `ITestHealthReport.Id`.** Slack keys on the report
+  document. Keying on the test is stable if a fresh document is ever written — which is exactly when a
+  recovery must still pair with the degradation before it — and it keeps `MongoDB.Bson.ObjectId`, and
+  therefore a MongoDB reference, out of the plugin entirely.
+
+Device pool severity uses the same load and problem-rate thresholds as the Slack sink (40/50 and
+20/30). Deliberate: both sinks report on the same farm, and a platform that is red in one channel and
+orange in the other is worse than either being wrong.
+
+**131 tests**, up from 78. The processor had no test coverage at all before this phase; it now has
+end-to-end tests that assert on the JSON that would reach Discord, which is the only level at which the
+interesting failures show up — a code fence severed by the 1024-character field limit, an embed over
+the combined ceiling, a link built into a field name where Discord renders it as source.
 
 ### Phase 3 — Users, mentions, DMs
 `IDiscordUserResolver` over the hot-reloadable config map, with `MemoryCache` and warn-once on

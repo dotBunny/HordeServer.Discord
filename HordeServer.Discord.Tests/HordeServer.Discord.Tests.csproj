@@ -19,6 +19,7 @@
   <ItemGroup>
     <ProjectReference Include="..\HordeServer.Discord\HordeServer.Discord.csproj" />
     <ProjectReference Include="..\tools\PluginProbe\PluginProbe.csproj" />
+    <ProjectReference Include="..\tools\HordeTestDoubles\HordeTestDoubles.csproj" />
   </ItemGroup>
 
   <ItemGroup>

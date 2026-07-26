@@ -10,10 +10,13 @@ It runs **alongside** Horde's built-in Slack support rather than replacing it, s
 gradually or run both indefinitely.
 
 > [!WARNING]
-> **Early development.** Job and step outcomes are sent to a configured channel. Build health issues,
-> configuration failures, farm reports and interactive triage are not implemented yet, and nothing has
-> been verified against a real Discord server — no message this plugin produces has ever actually been
-> delivered. Treat the formatting as unproven and point it at a test channel first.
+> **Early development.** Everything Horde broadcasts is delivered: job and step outcomes,
+> configuration update failures, agent and device reports, and test health. Build health **issues** and
+> the interactive triage that goes with them are not implemented yet, and neither are direct messages
+> or @-mentions — a notification aimed at a person is posted to the channel naming them instead.
+>
+> Nothing has been verified against a real Discord server: no message this plugin produces has ever
+> actually been delivered. Treat the formatting as unproven and point it at a test channel first.
 >
 > Installing it is safe regardless: with no bot token or no channel configured, it loads and does
 > nothing, and it cannot disturb the Slack sink either way.
@@ -118,6 +121,30 @@ Add a `Discord` section to your server's `server.json`, then restart the server:
 
 The plugin is **disabled by default** and does nothing until `Enabled` is `true`.
 
+## What gets sent, and where
+
+| Notification | Channel it uses |
+|---|---|
+| Job completed, step completed or aborted, label completed | The job's or stream's `notificationChannel`, honouring its outcome filter |
+| Jobs waiting to be scheduled | `jobNotificationChannel` |
+| Configuration update failed, and its recovery | `configNotificationChannel` |
+| Stream configuration update failed | `updateStreamsNotificationChannel` |
+| Agents stuck conforming or upgrading; session conflicts | `agentNotificationChannel` |
+| Device pool health and device problems | The channel on the report (a workflow's `reportChannel`) |
+| Device checkout notices | `deviceNotificationChannel` |
+| Test health degraded, and its recovery | The workflow's `reportChannel` |
+| Build health issues and triage | *Not implemented — Slack only for now* |
+
+Two behaviours are worth knowing before you wonder whether something is broken:
+
+- **Configuration failures are announced once, not every poll.** Horde re-reads its configuration on a
+  timer and reports the same failure each time. The plugin posts a failure when it first appears or
+  when it changes, and posts "configuration update succeeded" only as the recovery from a failure it
+  announced — never as routine chatter. The same applies to test health.
+- **Notifications aimed at a person go to a channel, addressed to them by name.** Slack sends some of
+  these as direct messages. Discord cannot look a user up by email, so until the user map lands the
+  message is posted where everyone can see it rather than not sent at all.
+
 ## Configuration
 
 There are two halves. **Channel routing** lives in a hot-reloadable `*.discord.json` config file;
@@ -168,10 +195,10 @@ All under `Horde:Plugins:Discord` in `server.json`. Changing any of them require
 | `GuildId` | string | The Discord server the bot operates in. Only used for member lookup and command registration — posting uses channel ids directly. |
 | `EnableInteractions` | bool | Whether to connect to Discord's gateway for buttons and modals. Posting works without it. Defaults to `true`. |
 | `JobNotificationChannel` | string | **Override.** Discord channel for job and step outcomes, `;`-separated, bypassing the routing map above. Normally unset. |
-| `AgentNotificationChannel` | string | Override for agent notifications. Not implemented yet. |
-| `ConfigNotificationChannel` | string | Override for configuration update failures. Not implemented yet. |
-| `UpdateStreamsNotificationChannel` | string | Override for stream update failures. Not implemented yet. |
-| `DeviceNotificationChannel` | string | Override for device reports. Not implemented yet. |
+| `AgentNotificationChannel` | string | Override for agent and session conflict reports. |
+| `ConfigNotificationChannel` | string | Override for configuration update failures. |
+| `UpdateStreamsNotificationChannel` | string | Override for stream configuration update failures. |
+| `DeviceNotificationChannel` | string | Override for device service notices. Device *reports* carry their own channel and are routed through the map above. |
 | `ErrorPrefix` | string | Emoji prefixed to error messages. Defaults to `:red_circle:`. |
 | `WarningPrefix` | string | Emoji prefixed to warning messages. Defaults to `:warning:`. |
 

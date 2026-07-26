@@ -1,0 +1,53 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>HordeTestDoubles</RootNamespace>
+    <AssemblyName>HordeTestDoubles</AssemblyName>
+    <!--
+      Deliberately NOT named HordeServer.* - that pattern is what the server's plugin scan matches, and nothing in
+      tools/ should ever be mistaken for a plugin if it is copied next to the server binaries.
+    -->
+    <IsPackable>false</IsPackable>
+    <!--
+      The one project in the repo that opts out. Everything here exists to satisfy an engine interface member for
+      member, and most of it either returns a constant or throws; an XML comment per property would be forty lines
+      of "gets the name" hiding the handful of remarks that actually say something. PluginProbe keeps documentation
+      on for the opposite reason - someone reading a red test ends up in its types and needs them explained.
+    -->
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <!--
+    Private=false as everywhere else - see .claude/PLAN.md section 3.1. MongoDB.Bson is here and nowhere else in the
+    repo: Horde exposes MongoDB types on interfaces a sink receives (ITestHealthReport.Id is an ObjectId,
+    IUserCollection.UpdateSettingsAsync takes a BsonValue), so a stand-in has to name them even though the plugin
+    itself never does.
+  -->
+  <ItemGroup>
+    <Reference Include="HordeServer.Shared">
+      <HintPath>$(HordeBinDir)\HordeServer.Shared.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="HordeServer.Build">
+      <HintPath>$(HordeBinDir)\HordeServer.Build.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="EpicGames.Horde">
+      <HintPath>$(HordeBinDir)\EpicGames.Horde.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="EpicGames.Core">
+      <HintPath>$(HordeBinDir)\EpicGames.Core.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="MongoDB.Bson">
+      <HintPath>$(HordeBinDir)\MongoDB.Bson.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+</Project>
