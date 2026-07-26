@@ -45,6 +45,16 @@
       <HintPath>$(HordeBinDir)\EpicGames.Core.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <!--
+      Needed to *call* IssueService.UpdateIssueAsync, not to name anything. Several of its optional parameters are
+      List<ObjectId>, and the compiler has to resolve every parameter type to bind a call even when the arguments are
+      left at their defaults. The plugin never mentions an ObjectId itself. Private=false as everywhere else, so the
+      drop stays one file - the server already has this loaded.
+    -->
+    <Reference Include="MongoDB.Bson">
+      <HintPath>$(HordeBinDir)\MongoDB.Bson.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
   </ItemGroup>
 
 </Project>

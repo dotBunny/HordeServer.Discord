@@ -22,6 +22,15 @@
   </ItemGroup>
 
   <!--
+    The plugin, for IHordeIssues. That interface is ours rather than Epic's, but its members name engine types, so a
+    fake implementing it hits the same discovery problem as the rest of this project and has to live here. No cycle:
+    the plugin has never referenced this.
+  -->
+  <ItemGroup>
+    <ProjectReference Include="..\..\HordeServer.Discord\HordeServer.Discord.csproj" />
+  </ItemGroup>
+
+  <!--
     Private=false as everywhere else - see .claude/PLAN.md section 3.1. MongoDB.Bson is here and nowhere else in the
     repo: Horde exposes MongoDB types on interfaces a sink receives (ITestHealthReport.Id is an ObjectId,
     IUserCollection.UpdateSettingsAsync takes a BsonValue), so a stand-in has to name them even though the plugin

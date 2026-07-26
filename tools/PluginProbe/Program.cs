@@ -1,4 +1,4 @@
-// Copyright (c) 2026 dotBunny Inc. See the LICENSE file in the project root for more information.
+// Copyright (c) dotBunny Inc. See the LICENSE file in the project root for more information.
 
 // Human-facing front end for the plugin load probe. HordeServer.Discord.Tests runs the same Probe.Run over the
 // same server directory and asserts on the result; this prints it, which is what you want when an engine upgrade

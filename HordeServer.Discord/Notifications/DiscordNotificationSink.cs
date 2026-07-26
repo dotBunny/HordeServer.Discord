@@ -1,4 +1,4 @@
-// Copyright (c) 2026 dotBunny Inc. See the LICENSE file in the project root for more information.
+// Copyright (c) dotBunny Inc. See the LICENSE file in the project root for more information.
 
 using EpicGames.Horde.Agents;
 using EpicGames.Horde.Jobs;
@@ -27,9 +27,9 @@ namespace HordeServer.Discord.Notifications
 	/// makes it tractable to diff against <see cref="INotificationSink"/> after an engine upgrade. Keep members in
 	/// interface order for the same reason.
 	///
-	/// As of Phase 2 every broadcast member delivers - jobs, steps, configuration updates, agent and device reports
-	/// and test health. Issues and the interactive triage that goes with them do not, and neither do the link
-	/// members. See <c>.claude/PLAN.md</c> section 5 for the phase breakdown.
+	/// **All seventeen members deliver.** What is still outstanding is not a member but a shape: issue triage posts a
+	/// new message per state change rather than rewriting one in a thread. See <c>.claude/PLAN.md</c> section 3.3.6,
+	/// where the pointer that needs storing turns out to be one Horde already keeps.
 	/// </remarks>
 	public sealed class DiscordNotificationSink : INotificationSink
 	{
@@ -99,17 +99,11 @@ namespace HordeServer.Discord.Notifications
 
 		/// <inheritdoc/>
 		public Task NotifyIssueUpdatedAsync(IIssue issue, CancellationToken cancellationToken)
-		{
-			_logger.LogDebug("[Discord] IssueUpdated {IssueId}", issue.Id);
-			return Task.CompletedTask;
-		}
+			=> _processor.NotifyIssueUpdatedAsync(issue, cancellationToken);
 
 		/// <inheritdoc/>
 		public Task SendIssueReportAsync(IssueReportGroup report, CancellationToken cancellationToken)
-		{
-			_logger.LogDebug("[Discord] IssueReport");
-			return Task.CompletedTask;
-		}
+			=> _processor.SendIssueReportAsync(report, cancellationToken);
 
 		#endregion
 

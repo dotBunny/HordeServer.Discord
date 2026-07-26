@@ -13,10 +13,10 @@ into a Horde server's application directory — no changes to Horde or to Unreal
 
 **The design and roadmap live in [`.claude/PLAN.md`](.claude/PLAN.md). Read it before doing
 substantive work** — it records the architecture investigation (with engine file/line references),
-the decisions taken and why, and the phase breakdown. Current status: **Phases 0–3 complete and verified against a real Discord
-server** (2026-07-26) — fifteen of the seventeen `INotificationSink` members deliver, with DMs and
-mentions, and all fifteen `DiscordSmoke` scenarios post to a live guild. Phase 4 is the gateway and
-interactive issue triage.
+the decisions taken and why, and the phase breakdown. Current status: **all seventeen `INotificationSink` members deliver**, verified
+against a real Discord server (2026-07-26), along with the gateway, interactive triage buttons and the
+hybrid Mark Fixed modal flow. What remains of Phase 4 is the triage *thread* shape (§3.3.6) and the
+Mongo message-state collection that edit-in-place needs.
 
 ## The two trees
 
@@ -186,6 +186,13 @@ reason, since someone reading a red test ends up in its types.
   edit the message through the interaction token. Handlers never see the deadline. They also run off
   the receive loop, because that loop is what reads heartbeat acknowledgements. Live-checkable with
   `-- --interact`, which needs someone to actually press the button.
+- **`Notifications/DiscordIssueTriage`** — what the buttons *do*. Registers for the `issue` scope and
+  turns each verb into a call on Horde's `IssueService`, behind **`IHordeIssues`** because
+  `IssueService` reaches MongoDB in its constructor and the test suite must run without one. That
+  adapter (`HordeIssues`) is the only class here with no coverage, and is kept to one call per method
+  for exactly that reason. Note `IDiscordUserResolver.GetEmail` — the user map read *backwards*,
+  because a press arrives as a Discord snowflake and every issue operation is audited against a Horde
+  user.
 
 `INotificationSink` is internal to Horde with **no stability guarantee**. After an engine upgrade,
 rebuild — a stale DLL against a newer server fails at plugin load rather than degrading.
@@ -195,7 +202,7 @@ rebuild — a stale DLL against a newer server fails at plugin load rather than 
 - **Tabs** for indentation, Allman braces — matches Horde's own source, since this code sits beside it
   conceptually and gets diffed against it.
 - File header on every `.cs`:
-  `// Copyright (c) 2026 dotBunny Inc. See the LICENSE file in the project root for more information.`
+  `// Copyright (c) dotBunny Inc. See the LICENSE file in the project root for more information.`
 - `RootNamespace` is `HordeServer`. Plugin and config classes sit in `namespace HordeServer` (matching
   Horde's convention); everything else goes under `HordeServer.Discord.*` to avoid colliding with
   Epic's types.

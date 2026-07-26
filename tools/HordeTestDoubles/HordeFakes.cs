@@ -1,4 +1,4 @@
-// Copyright (c) 2026 dotBunny Inc. See the LICENSE file in the project root for more information.
+// Copyright (c) dotBunny Inc. See the LICENSE file in the project root for more information.
 
 using EpicGames.Core;
 using EpicGames.Horde.Jobs;
@@ -82,8 +82,11 @@ namespace HordeTestDoubles
 		public Task<IUser?> FindUserByLoginAsync(string login, CancellationToken cancellationToken = default)
 			=> throw new NotSupportedException();
 
+		// Read by issue triage: an interaction identifies its author by Discord snowflake, the user map turns that
+		// into an email, and this turns the email into the Horde user every issue operation is audited against.
 		public Task<IUser?> FindUserByEmailAsync(string email, CancellationToken cancellationToken = default)
-			=> throw new NotSupportedException();
+			=> Task.FromResult(_users.Values.FirstOrDefault(x
+				=> String.Equals(x.Email, email, StringComparison.OrdinalIgnoreCase)));
 
 		public Task<IUser> FindOrAddUserByLoginAsync(string login, string? name = null, string? email = null, CancellationToken cancellationToken = default)
 			=> throw new NotSupportedException();

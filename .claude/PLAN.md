@@ -399,6 +399,28 @@ non-resumable close codes, and reconnect backoff. Budget for it (§5, Phase 4).
    own lifecycle and auto-archive window. Recommend genuine Discord threads (`POST /channels/{id}/threads`
    from the parent message) since the parent→children shape matches exactly; set a long auto-archive
    and store the thread id in the message-state document alongside the parent message id.
+
+   **Correction (2026-07-26): threads need no message-state document at all.** Two things were missed
+   when the above was written.
+
+   - **Horde already stores the pointer.** `IIssue.WorkflowThreadUrl` is a per-issue field, written via
+     `IIssueCollection.TryUpdateIssueAsync(…, new UpdateIssueOptions { WorkflowThreadUrl = … })` — and
+     it is exactly what the Slack sink stores its triage thread permalink in
+     (`SlackNotificationSink.cs:1154`). `IssueService.UpdateIssueAsync` also takes it directly.
+   - **A Discord thread's id *is* its source message's id.** So a single stored link of the form
+     `channels/{guild}/{channel}/{messageId}` yields the parent channel, the parent message id for
+     edit-in-place, *and* the thread id. Both halves of §3.3.6 fall out of one field Horde already
+     persists.
+
+   **But the field has one slot and Slack wants it too.** A studio running both sinks would find its
+   Slack triage links overwritten by Discord ones, which breaks the "runs alongside Slack, unchanged"
+   promise in §2. **Decision (2026-07-26):** mirror the `EnableDeepLinks` precedent — a `bool?` that
+   defaults to writing `WorkflowThreadUrl` only when the Build plugin has no `SlackToken`, and can be
+   set either way explicitly. When Slack owns the field, Discord threads are created per issue and not
+   reused, which is a degradation rather than a failure.
+
+   This retires `DiscordMessageStateCollection` as a prerequisite. It stays on the table only if
+   per-message state beyond the triage parent is ever needed.
 7. **No invite-to-channel equivalent.** Slack pulls suspects into the triage channel with
    `InviteUsersAsync` (line 1011), escalating through an admin token for restricted users (1036).
    Discord has no API for adding an existing member to a channel they can already see, and no
@@ -843,7 +865,48 @@ Handlers never see the deadline. Two consequences worth recording:
 - **Handlers run off the gateway's receive loop.** That loop also reads heartbeat acknowledgements, so
   a handler blocking it would eventually be diagnosed as a dead connection and provoke a reconnect.
 
-Still to come in this phase: the modal flow (§3.3.4), select menus, and the last two sink members.
+**The last two sink members landed 2026-07-26, taking the plugin to 17/17.**
+`NotifyIssueUpdatedAsync` addresses the person who can act — owner, then nominee — and falls back to
+the triage channels of every workflow the issue's streams define one for, which is the Phase 3 rule
+applied to a request to act rather than an announcement. `SendIssueReportAsync` is a digest and
+therefore the opposite: channel only, never a DM, and no buttons on it.
+
+Three decisions worth recording:
+
+- **Repeated states are suppressed via `DiscordRepeatFilter`, not reposted.** Horde raises
+  `NotifyIssueUpdatedAsync` on *every* change, including ones a reader would not notice. The digest
+  deliberately excludes `LastSeenAt` and `UpdateIndex` — both move whenever the issue is touched at
+  all, and including either would defeat the suppression entirely.
+- **A resolved issue carries no action buttons**, only the link. There is no state left to move it to,
+  and a button that does nothing is worse than no button.
+- **Not yet edit-in-place.** A state change posts a new message rather than rewriting the old one,
+  because remembering which message belongs to which issue across a restart needs the Mongo collection
+  below. The buttons work regardless — a press carries its own interaction token, and the message it
+  is on is edited through that, which is why the interactive flow did not have to wait for it.
+
+**The buttons became real on 2026-07-26.** `DiscordIssueTriage` registers for the `issue` scope and
+turns each verb into a call on Horde's `IssueService`. Until then the components were posted and
+routed but nothing acted on them — a press logged *"Nothing is registered for interaction scope
+'issue'"*.
+
+- **`IHordeIssues` is a seam over `IssueService`**, which is a concrete sealed class that reaches
+  MongoDB in its constructor. Without it nothing downstream of a press could be tested, and running
+  `dotnet test` without MongoDB or Redis is a property worth protecting. The adapter behind it is one
+  call per method and is **the only class in the plugin with no coverage**, deliberately.
+- **The user map is now read backwards.** A press identifies its author with a Discord snowflake and
+  every issue operation is audited against a Horde user, so `IDiscordUserResolver.GetEmail` resolves
+  snowflake → email and `IUserCollection.FindUserByEmailAsync` finishes the job. An unmapped presser
+  gets an ephemeral reply naming `userMap` rather than silence — they are looking at the button.
+- **Acknowledging means different things in a channel and a DM.** In a DM the reader already owns the
+  issue, so it is only an acknowledgement; in a channel it is how an unowned issue gets claimed. Slack
+  splits this across two handlers and the distinction is worth keeping. Claiming an issue somebody
+  *else* owns asks first, with an ephemeral "Take it anyway".
+- **`MongoDB.Bson` is now referenced by the plugin** (`Private=false`, so the drop is still one file).
+  Not to name anything — several `UpdateIssueAsync` parameters are `List<ObjectId>`, and the compiler
+  resolves every parameter type to bind a call even when the arguments are left at their defaults.
+
+Still to come: the triage **thread** shape (§3.3.6), which the correction there shows needs no new
+storage, and the `WorkflowThreadUrl` gate that goes with it.
 
 Interaction handler mapping component `custom_id`s to the same `IssueService` calls the Slack sink
 makes — `ack` / `accept` / `decline`, in both DM and channel flavours (Slack keeps two handlers,

@@ -1,13 +1,15 @@
-// Copyright (c) 2026 dotBunny Inc. See the LICENSE file in the project root for more information.
+// Copyright (c) dotBunny Inc. See the LICENSE file in the project root for more information.
 
 using EpicGames.Horde.Agents;
 using EpicGames.Horde.Commits;
 using EpicGames.Horde.Jobs;
+using EpicGames.Horde.Issues;
 using EpicGames.Horde.Logs;
 using HordeServer.Agents;
 using HordeServer.Configuration;
 using HordeServer.Devices;
 using HordeServer.Discord.Notifications;
+using HordeServer.Issues;
 using HordeServer.Logs;
 using HordeServer.Notifications;
 using HordeServer.Users;
@@ -90,7 +92,66 @@ namespace DiscordSmoke
 					SmokeChannelId,
 					null,
 					ct)),
+
+			new Scenario("issue", "An open issue, with live triage buttons", (processor, ct)
+				=> processor.NotifyIssueUpdatedAsync(OpenIssue(), ct)),
+
+			new Scenario("issue-resolved", "...and once resolved, offering nothing but the link", (processor, ct)
+				=> processor.NotifyIssueUpdatedAsync(ResolvedIssue(), ct)),
+
+			new Scenario("issue-report", "The periodic triage digest for a workflow", (processor, ct)
+				=> processor.SendIssueReportAsync(IssueReport(), ct)),
 		];
+
+		/// <summary>
+		/// An unassigned issue, so the buttons are all present and the message lands in a channel.
+		/// </summary>
+		/// <remarks>
+		/// The buttons on this one are real: pressing them produces an interaction that nothing is listening for
+		/// unless the gateway is also running, in which case the log says so. <c>--modal</c> is the mode that
+		/// actually handles them.
+		/// </remarks>
+		static FakeIssue OpenIssue()
+		{
+			FakeIssue issue = IssueFakes.Issue(4821, "Compile error in Runtime/Core/Private/Misc/App.cpp", "dethol-main", "dethol-release");
+			issue.Description = "Three steps across two streams are failing with the same error.";
+
+			return issue;
+		}
+
+		static FakeIssue ResolvedIssue()
+		{
+			FakeIssue issue = IssueFakes.Issue(4822, "Cook failure on *PS5* [nightly]", "dethol-main");
+
+			issue.ResolvedAt = DateTime.UtcNow.AddMinutes(-5.0);
+			issue.FixCommitId = CommitId.FromPerforceChange(1234567);
+			issue.RootCauseCategory = "Content";
+
+			return issue;
+		}
+
+		/// <summary>
+		/// A digest with more issues than fit, to see the overflow line in place.
+		/// </summary>
+		static IssueReportGroup IssueReport()
+		{
+			IssueReportGroup group = new IssueReportGroup(SmokeChannelId, DateTime.UtcNow);
+
+			IssueReport main = IssueFakes.Report("dethol-main", "incremental", SmokeChannelId, 428, 391);
+
+			for (int index = 0; index < 12; index++)
+			{
+				FakeIssue issue = IssueFakes.Issue(4800 + index, $"Failing step {index} in *Compile Win64* [shard {index}]", "dethol-main");
+				issue.Severity = index % 3 == 0 ? IssueSeverity.Warning : IssueSeverity.Error;
+
+				main.Issues.Add(issue);
+			}
+
+			group.Reports.Add(main);
+			group.Reports.Add(IssueFakes.Report("dethol-release", "incremental", SmokeChannelId, 96, 96));
+
+			return group;
+		}
 
 		/// <summary>
 		/// The Horde-side channel id every scenario routes through, mapped to the real test channel.

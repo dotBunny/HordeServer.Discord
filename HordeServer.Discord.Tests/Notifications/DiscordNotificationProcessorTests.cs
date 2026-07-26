@@ -1,4 +1,4 @@
-// Copyright (c) 2026 dotBunny Inc. See the LICENSE file in the project root for more information.
+// Copyright (c) dotBunny Inc. See the LICENSE file in the project root for more information.
 
 using System.Net;
 using System.Text.Json;
@@ -12,6 +12,7 @@ using HordeServer.Devices;
 using HordeServer.Discord.Client;
 using HordeServer.Discord.Notifications;
 using HordeServer.Discord.Tests.Client;
+using HordeServer.Issues;
 using HordeServer.Notifications;
 using HordeServer.Plugins;
 using HordeServer.Users;
@@ -1039,6 +1040,276 @@ namespace HordeServer.Discord.Tests.Notifications
 				LastProblemURL = lastProblemUrl,
 				LastProblemDesc = lastProblemUrl == null ? null : "Reservation failed",
 			};
+
+		#region Issues
+
+		[TestMethod]
+		public async Task AnUnassignedIssueGoesToAChannelWithTriageButtons()
+		{
+			Harness harness = new Harness();
+
+			await harness.Processor.NotifyIssueUpdatedAsync(IssueFakes.Issue(42, "Compile error in Core"), default);
+
+			Assert.AreEqual(1, harness.Handler.Requests.Count);
+			StringAssert.Contains(harness.Handler.Requests[0].Uri, $"channels/{JobChannel}/messages");
+			StringAssert.Contains(harness.Handler.Embed(0).GetProperty("title").GetString(), "Issue 42");
+
+			CollectionAssert.AreEquivalent(
+				new[] { "issue_42_ack", "issue_42_decline", "issue_42_markfixed" },
+				CustomIds(harness, 0).ToArray());
+		}
+
+		[TestMethod]
+		public async Task AnIssueWithAnOwnerIsSentToThemDirectly()
+		{
+			FakeUserCollection users = new FakeUserCollection();
+			IUser ada = HordeFakes.User("Ada Lovelace", AdaEmail);
+			users.Add(ada);
+
+			Harness harness = new Harness(users, Harness.Mapped((AdaEmail, AdaDiscordId)),
+				responses: [RecordingHttpHandler.Json(HttpStatusCode.OK, $$"""{"id":"{{AdaDiscordId}}"}""")]);
+
+			FakeIssue issue = IssueFakes.Issue(42, "Compile error in Core");
+			issue.OwnerId = ada.Id;
+
+			await harness.Processor.NotifyIssueUpdatedAsync(issue, default);
+
+			// Open the DM channel, then post to it. Nothing goes to the triage channel.
+			StringAssert.Contains(harness.Handler.Requests[0].Uri, "users/@me/channels");
+			StringAssert.Contains(harness.Handler.Requests[1].Uri, $"channels/{AdaDiscordId}/messages");
+			Assert.AreEqual(2, harness.Handler.Requests.Count,
+				"An issue with an owner is a request to one person to act, not an announcement.");
+		}
+
+		[TestMethod]
+		public async Task TheButtonsGoOnTheDirectMessageToo()
+		{
+			FakeUserCollection users = new FakeUserCollection();
+			IUser ada = HordeFakes.User("Ada Lovelace", AdaEmail);
+			users.Add(ada);
+
+			Harness harness = new Harness(users, Harness.Mapped((AdaEmail, AdaDiscordId)),
+				responses: [RecordingHttpHandler.Json(HttpStatusCode.OK, $$"""{"id":"{{AdaDiscordId}}"}""")]);
+
+			FakeIssue issue = IssueFakes.Issue(42, "Compile error in Core");
+			issue.OwnerId = ada.Id;
+
+			await harness.Processor.NotifyIssueUpdatedAsync(issue, default);
+
+			Assert.IsTrue(CustomIds(harness, 1).Contains("issue_42_ack"),
+				"A triage action is the same action wherever it is taken from.");
+		}
+
+		[TestMethod]
+		public async Task AnAcknowledgedIssueStopsOfferingToAcknowledgeIt()
+		{
+			Harness harness = new Harness();
+
+			FakeIssue issue = IssueFakes.Issue(42, "Compile error in Core");
+			issue.AcknowledgedAt = new DateTime(2026, 7, 26, 10, 0, 0, DateTimeKind.Utc);
+
+			await harness.Processor.NotifyIssueUpdatedAsync(issue, default);
+
+			CollectionAssert.DoesNotContain(CustomIds(harness, 0).ToArray(), "issue_42_ack");
+			CollectionAssert.Contains(CustomIds(harness, 0).ToArray(), "issue_42_markfixed");
+		}
+
+		[TestMethod]
+		public async Task AResolvedIssueOffersNothingButTheLink()
+		{
+			Harness harness = new Harness();
+
+			FakeIssue issue = IssueFakes.Issue(42, "Compile error in Core");
+			issue.ResolvedAt = new DateTime(2026, 7, 26, 11, 0, 0, DateTimeKind.Utc);
+
+			await harness.Processor.NotifyIssueUpdatedAsync(issue, default);
+
+			Assert.AreEqual(0, CustomIds(harness, 0).Count,
+				"There is no state left to move a resolved issue to, and a button that does nothing is worse than "
+				+ "no button.");
+
+			Assert.AreEqual(DiscordNotificationProcessor.SuccessColor, harness.Handler.Embed(0).GetProperty("color").GetInt32());
+			StringAssert.Contains(harness.Handler.Field(0, "Status"), "Resolved");
+		}
+
+		[TestMethod]
+		public async Task AQuarantinedIssueIsSilent()
+		{
+			Harness harness = new Harness();
+
+			FakeIssue issue = IssueFakes.Issue(42, "Compile error in Core");
+			issue.QuarantinedByUserId = HordeFakes.User("Ada Lovelace").Id;
+
+			await harness.Processor.NotifyIssueUpdatedAsync(issue, default);
+
+			Assert.AreEqual(0, harness.Handler.Requests.Count,
+				"Quarantining is how an operator says stop telling people about this.");
+		}
+
+		[TestMethod]
+		public async Task TheSameIssueStateIsOnlyAnnouncedOnce()
+		{
+			Harness harness = new Harness();
+			FakeIssue issue = IssueFakes.Issue(42, "Compile error in Core");
+
+			await harness.Processor.NotifyIssueUpdatedAsync(issue, default);
+			await harness.Processor.NotifyIssueUpdatedAsync(issue, default);
+			await harness.Processor.NotifyIssueUpdatedAsync(issue, default);
+
+			Assert.AreEqual(1, harness.Handler.Requests.Count,
+				"Horde raises this on every change, including ones that alter nothing a reader would notice.");
+		}
+
+		[TestMethod]
+		public async Task AChangedIssueIsAnnouncedAgain()
+		{
+			Harness harness = new Harness();
+			FakeIssue issue = IssueFakes.Issue(42, "Compile error in Core");
+
+			await harness.Processor.NotifyIssueUpdatedAsync(issue, default);
+
+			issue.ResolvedAt = new DateTime(2026, 7, 26, 11, 0, 0, DateTimeKind.Utc);
+
+			await harness.Processor.NotifyIssueUpdatedAsync(issue, default);
+
+			Assert.AreEqual(2, harness.Handler.Requests.Count);
+		}
+
+		[TestMethod]
+		public async Task BeingTouchedWithoutChangingIsNotAChange()
+		{
+			Harness harness = new Harness();
+			FakeIssue issue = IssueFakes.Issue(42, "Compile error in Core");
+
+			await harness.Processor.NotifyIssueUpdatedAsync(issue, default);
+
+			// Both move whenever the issue is touched at all. Including either in the digest would defeat the
+			// suppression entirely.
+			issue.LastSeenAt = issue.LastSeenAt.AddHours(1.0);
+			issue.UpdateIndex++;
+
+			await harness.Processor.NotifyIssueUpdatedAsync(issue, default);
+
+			Assert.AreEqual(1, harness.Handler.Requests.Count);
+		}
+
+		[TestMethod]
+		public async Task AnIssueReportGoesToTheChannelHordeChose()
+		{
+			Harness harness = new Harness();
+
+			IssueReportGroup group = new IssueReportGroup(WorkflowSlackId, new DateTime(2026, 7, 26, 12, 0, 0, DateTimeKind.Utc));
+			IssueReport report = IssueFakes.Report("dethol-main", "incremental", WorkflowSlackId, 100, 93);
+			report.Issues.Add(IssueFakes.Issue(42, "Compile error in Core"));
+			group.Reports.Add(report);
+
+			await harness.Processor.SendIssueReportAsync(group, default);
+
+			Assert.AreEqual(1, harness.Handler.Requests.Count);
+			StringAssert.Contains(harness.Handler.Requests[0].Uri, $"channels/{WorkflowChannel}/messages");
+			StringAssert.Contains(harness.Handler.Embed(0).GetProperty("title").GetString(), "dethol-main");
+			StringAssert.Contains(harness.Handler.Field(0, "Steps passing"), "93 of 100");
+		}
+
+		[TestMethod]
+		public async Task AReportCarriesNoButtons()
+		{
+			Harness harness = new Harness();
+
+			IssueReportGroup group = new IssueReportGroup(WorkflowSlackId, DateTime.UtcNow);
+			IssueReport report = IssueFakes.Report("dethol-main", "incremental", WorkflowSlackId, 10, 10);
+			report.Issues.Add(IssueFakes.Issue(42, "Compile error in Core"));
+			group.Reports.Add(report);
+
+			await harness.Processor.SendIssueReportAsync(group, default);
+
+			Assert.IsFalse(harness.Handler.Message(0).TryGetProperty("components", out _),
+				"A digest is a summary, not a request to act on any one of the issues in it.");
+		}
+
+		[TestMethod]
+		public async Task AWorkflowWithNothingOpenSaysSo()
+		{
+			Harness harness = new Harness();
+
+			IssueReportGroup group = new IssueReportGroup(WorkflowSlackId, DateTime.UtcNow);
+			group.Reports.Add(IssueFakes.Report("dethol-main", "incremental", WorkflowSlackId, 40, 40));
+
+			await harness.Processor.SendIssueReportAsync(group, default);
+
+			Assert.AreEqual(DiscordNotificationProcessor.SuccessColor, harness.Handler.Embed(0).GetProperty("color").GetInt32());
+			StringAssert.Contains(harness.Handler.Embed(0).GetProperty("description").GetString(), "No open issues");
+		}
+
+		[TestMethod]
+		public async Task AVeryLongReportIsCountedRatherThanListed()
+		{
+			Harness harness = new Harness();
+
+			IssueReportGroup group = new IssueReportGroup(WorkflowSlackId, DateTime.UtcNow);
+			IssueReport report = IssueFakes.Report("dethol-main", "incremental", WorkflowSlackId, 100, 20);
+
+			for (int index = 0; index < 30; index++)
+			{
+				report.Issues.Add(IssueFakes.Issue(index, $"Issue number {index}"));
+			}
+
+			group.Reports.Add(report);
+
+			await harness.Processor.SendIssueReportAsync(group, default);
+
+			string issues = harness.Handler.Field(0, "Issues")!;
+
+			Assert.IsTrue(issues.Length <= DiscordEmbedLimits.FieldValue);
+			StringAssert.Contains(issues, "see the dashboard for the rest");
+			StringAssert.Contains(harness.Handler.Field(0, "Open issues"), "30",
+				"The count has to survive even when the list does not.");
+		}
+
+		[TestMethod]
+		public async Task EachStreamAndWorkflowGetsItsOwnMessage()
+		{
+			Harness harness = new Harness();
+
+			IssueReportGroup group = new IssueReportGroup(WorkflowSlackId, DateTime.UtcNow);
+			group.Reports.Add(IssueFakes.Report("dethol-release", "incremental", WorkflowSlackId, 10, 10));
+			group.Reports.Add(IssueFakes.Report("dethol-main", "incremental", WorkflowSlackId, 10, 9));
+
+			await harness.Processor.SendIssueReportAsync(group, default);
+
+			Assert.AreEqual(2, harness.Handler.Requests.Count);
+			StringAssert.Contains(harness.Handler.Embed(0).GetProperty("title").GetString(), "dethol-main",
+				"Ordered by workflow then stream, the way Slack orders them, so a studio reading both sees the "
+				+ "same sequence.");
+		}
+
+		/// <summary>
+		/// The custom ids of every button on a recorded message, link buttons excluded.
+		/// </summary>
+		static List<string> CustomIds(Harness harness, int index)
+		{
+			List<string> ids = new List<string>();
+
+			if (!harness.Handler.Message(index).TryGetProperty("components", out JsonElement rows))
+			{
+				return ids;
+			}
+
+			foreach (JsonElement row in rows.EnumerateArray())
+			{
+				foreach (JsonElement component in row.GetProperty("components").EnumerateArray())
+				{
+					if (component.TryGetProperty("custom_id", out JsonElement customId))
+					{
+						ids.Add(customId.GetString()!);
+					}
+				}
+			}
+
+			return ids;
+		}
+
+		#endregion
 
 		/// <summary>
 		/// A processor wired to a recording transport, with every category channel configured.

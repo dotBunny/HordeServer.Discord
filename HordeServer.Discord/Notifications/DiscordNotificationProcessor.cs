@@ -1,7 +1,9 @@
-// Copyright (c) 2026 dotBunny Inc. See the LICENSE file in the project root for more information.
+// Copyright (c) dotBunny Inc. See the LICENSE file in the project root for more information.
 
+using System.Globalization;
 using System.Text.Json;
 using EpicGames.Horde.Agents;
+using EpicGames.Horde.Issues;
 using EpicGames.Horde.Jobs;
 using EpicGames.Horde.Jobs.Graphs;
 using EpicGames.Horde.Logs;
@@ -11,6 +13,7 @@ using HordeServer.Agents;
 using HordeServer.Configuration;
 using HordeServer.Devices;
 using HordeServer.Discord.Client;
+using HordeServer.Issues;
 using HordeServer.Jobs.TestData;
 using HordeServer.Logs;
 using HordeServer.Notifications;
@@ -370,6 +373,369 @@ namespace HordeServer.Discord.Notifications
 					MaxQuotedLogEvents,
 					"see the log for the rest"));
 		}
+
+		#endregion
+
+		#region Issues
+
+		/// <summary>
+		/// Most issues listed in one report embed before the rest are counted instead.
+		/// </summary>
+		/// <remarks>
+		/// Slack uses eight per message. The same number here, for a different reason: an embed holds 25 fields, but
+		/// a digest that needs scrolling is one nobody reads.
+		/// </remarks>
+		public const int MaxIssuesPerReport = 8;
+
+		/// <summary>
+		/// Announces a change to an issue, with the buttons to act on it.
+		/// </summary>
+		/// <remarks>
+		/// Addressed to the person who can do something about it - the owner if one has been assigned, the nominee
+		/// if somebody has been suggested - and falling back to the triage channel when neither is reachable. That
+		/// is the same rule as the subscription notifications in Phase 3, and for the same reason: this is a request
+		/// to act, not an announcement.
+		///
+		/// **Repeated states are suppressed rather than reposted.** Horde raises this on every change to an issue,
+		/// including ones that alter nothing a reader would notice, and an issue open for a day would otherwise
+		/// produce a wall of near-identical messages. The digest in <see cref="DescribeIssueState"/> is what counts
+		/// as a change.
+		///
+		/// **Not yet edit-in-place.** A state change posts a new message rather than rewriting the old one, because
+		/// remembering which message belongs to which issue across a restart needs the Mongo collection that is
+		/// still deferred - see <c>.claude/PLAN.md</c> section 3.3.6. The buttons work regardless: a press carries
+		/// its own interaction token, and the message it is on is edited through that.
+		/// </remarks>
+		/// <param name="issue">Issue that changed.</param>
+		/// <param name="cancellationToken">Cancellation token for the operation.</param>
+		public async Task NotifyIssueUpdatedAsync(IIssue issue, CancellationToken cancellationToken)
+		{
+			if (!_serverConfig.IsConfigured)
+			{
+				return;
+			}
+
+			// Quarantining an issue is how an operator says "stop telling people about this".
+			if (issue.QuarantinedByUserId != null)
+			{
+				_logger.LogDebug("Issue {IssueId} is quarantined; not notifying Discord.", issue.Id);
+				return;
+			}
+
+			if (!_repeats.RecordIfChanged(IssueEventId(issue), DescribeIssueState(issue)))
+			{
+				_logger.LogDebug("Issue {IssueId} has not changed in any way worth re-posting to Discord.", issue.Id);
+				return;
+			}
+
+			UserId? recipientId = issue.OwnerId ?? issue.NominatedById;
+			IUser? recipient = recipientId == null ? null : await GetUserAsync(recipientId.Value, cancellationToken);
+			IReadOnlyList<DiscordDestination> triage = ResolveIssueChannels(issue);
+
+			DiscordEmbedBuilder embed = BuildIssueEmbed(issue);
+			DiscordComponentBuilder buttons = BuildIssueButtons(issue);
+
+			if (recipient == null)
+			{
+				await SendAsync(triage, embed, null, buttons, cancellationToken);
+				return;
+			}
+
+			await SendToUsersAsync([recipient], triage, embed, buttons, cancellationToken);
+		}
+
+		/// <summary>
+		/// Posts the periodic summary of everything open in a workflow.
+		/// </summary>
+		/// <remarks>
+		/// One embed per stream and workflow, all to the channel Horde chose. Unlike
+		/// <see cref="NotifyIssueUpdatedAsync"/> this is a digest rather than a request to act, so it carries no
+		/// buttons and is never sent as a direct message.
+		/// </remarks>
+		/// <param name="group">Reports to post, and the channel they belong in.</param>
+		/// <param name="cancellationToken">Cancellation token for the operation.</param>
+		public async Task SendIssueReportAsync(IssueReportGroup group, CancellationToken cancellationToken)
+		{
+			if (!_serverConfig.IsConfigured)
+			{
+				return;
+			}
+
+			DiscordDestination? destination = _channels.Resolve(group.Channel);
+
+			if (destination == null)
+			{
+				_logger.LogDebug("No Discord channel is mapped for issue report channel {Channel}.", group.Channel);
+				return;
+			}
+
+			// Ordered the way Slack orders them, so a studio reading both sees the same sequence.
+			foreach (IssueReport report in group.Reports.OrderBy(x => x.WorkflowId.ToString(), StringComparer.Ordinal)
+				.ThenBy(x => x.StreamId.ToString(), StringComparer.Ordinal))
+			{
+				await SendToAsync(destination, BuildIssueReportEmbed(report, group.Time), null, cancellationToken);
+			}
+		}
+
+		/// <summary>
+		/// Builds the whole message for an issue - embed, buttons and all.
+		/// </summary>
+		/// <remarks>
+		/// Public because triage rewrites the message after acting on it, and it has to render the issue the same
+		/// way this class first posted it. Anything else and a message would change shape the moment somebody
+		/// pressed a button on it.
+		/// </remarks>
+		/// <param name="issue">Issue to render.</param>
+		/// <returns>A message ready to post or to replace an existing one with.</returns>
+		public DiscordMessage BuildIssueMessage(IIssue issue)
+		{
+			DiscordComponentBuilder buttons = BuildIssueButtons(issue);
+			DiscordMessageBuilder message = new DiscordMessageBuilder().AddEmbed(BuildIssueEmbed(issue));
+
+			// A resolved issue has only its link left, and an edit that omitted components entirely would leave the
+			// old buttons in place - so this always says explicitly which of the two it means.
+			return buttons.IsEmpty
+				? message.WithoutComponents().Build()
+				: message.WithComponents(buttons).Build();
+		}
+
+		/// <summary>
+		/// Builds the embed describing one issue.
+		/// </summary>
+		DiscordEmbedBuilder BuildIssueEmbed(IIssue issue)
+		{
+			string summary = String.IsNullOrEmpty(issue.UserSummary) ? issue.Summary : issue.UserSummary;
+
+			DiscordEmbedBuilder embed = new DiscordEmbedBuilder()
+				.WithTitle($"{IssuePrefix(issue)}Issue {issue.Id}: {Escape(summary)}")
+				.WithUrl(GetIssueUrl(issue.Id).ToString())
+				.WithColor(IssueColor(issue));
+
+			if (!String.IsNullOrEmpty(issue.Description) && issue.Description != summary)
+			{
+				embed.WithDescription(Escape(issue.Description));
+			}
+
+			embed.AddField("Status", DescribeIssueStatus(issue), true);
+			embed.AddField("Severity", issue.Severity.ToString(), true);
+			embed.AddField("Opened", $"<t:{new DateTimeOffset(issue.CreatedAt, TimeSpan.Zero).ToUnixTimeSeconds()}:R>", true);
+
+			IReadOnlyList<string> streams = [.. issue.Streams.Select(x => x.StreamId.ToString()).Distinct(StringComparer.Ordinal)];
+
+			if (streams.Count > 0)
+			{
+				embed.AddField(streams.Count == 1 ? "Stream" : "Streams", Escape(String.Join(", ", streams)), true);
+			}
+
+			if (issue.FixCommitId != null)
+			{
+				embed.AddField("Fixed in", Code(issue.FixCommitId.ToString()!), true);
+			}
+
+			if (!String.IsNullOrEmpty(issue.RootCauseCategory))
+			{
+				embed.AddField("Root cause", Escape(issue.RootCauseCategory), true);
+			}
+
+			return embed;
+		}
+
+		/// <summary>
+		/// Builds the triage buttons for an issue.
+		/// </summary>
+		/// <remarks>
+		/// Verbs kept from Slack - <c>ack</c>, <c>decline</c>, <c>markfixed</c> - so the two sinks are describing the
+		/// same actions. A resolved issue offers nothing but the link: there is no state left to move it to, and a
+		/// button that does nothing is worse than no button.
+		/// </remarks>
+		DiscordComponentBuilder BuildIssueButtons(IIssue issue)
+		{
+			DiscordComponentBuilder buttons = new DiscordComponentBuilder();
+			string id = issue.Id.ToString(CultureInfo.InvariantCulture);
+
+			if (issue.ResolvedAt == null)
+			{
+				if (issue.AcknowledgedAt == null)
+				{
+					buttons.AddButton(
+						new DiscordCustomId(DiscordCustomId.IssueScope, id, "ack").ToString(),
+						"Acknowledge",
+						DiscordButtonStyle.Success);
+				}
+
+				buttons.AddButton(
+					new DiscordCustomId(DiscordCustomId.IssueScope, id, "decline").ToString(),
+					"Not me",
+					DiscordButtonStyle.Secondary);
+
+				buttons.AddButton(
+					new DiscordCustomId(DiscordCustomId.IssueScope, id, "markfixed").ToString(),
+					"Mark Fixed",
+					DiscordButtonStyle.Primary);
+			}
+
+			buttons.AddLink(GetIssueUrl(issue.Id).ToString(), "Open in Horde");
+
+			return buttons;
+		}
+
+		/// <summary>
+		/// Builds the embed summarising one stream's workflow.
+		/// </summary>
+		DiscordEmbedBuilder BuildIssueReportEmbed(IssueReport report, DateTime time)
+		{
+			DiscordEmbedBuilder embed = new DiscordEmbedBuilder()
+				.WithTitle($"{Escape(report.StreamId.ToString())} - {Escape(report.WorkflowId.ToString())}")
+				.WithColor(report.Issues.Count == 0 ? SuccessColor : WarningColor)
+				.WithFooter($"as of {time:u}");
+
+			WorkflowStats stats = report.WorkflowStats;
+
+			if (stats.NumSteps > 0)
+			{
+				int percent = (int)Math.Round(100.0 * stats.NumPassingSteps / stats.NumSteps);
+				embed.AddField("Steps passing", $"{stats.NumPassingSteps} of {stats.NumSteps} ({percent}%)", true);
+			}
+
+			if (report.Issues.Count == 0)
+			{
+				embed.WithDescription("No open issues.");
+				return embed;
+			}
+
+			embed.AddField("Open issues", report.Issues.Count.ToString(CultureInfo.InvariantCulture), true);
+			embed.AddField(
+				"Issues",
+				Summarise(
+					[.. report.Issues.OrderBy(x => x.Id)],
+					x => $"{IssueBullet(x)} [Issue {x.Id}]({GetIssueUrl(x.Id)}) {Escape(FirstLine(String.IsNullOrEmpty(x.UserSummary) ? x.Summary : x.UserSummary))}",
+					MaxIssuesPerReport,
+					"see the dashboard for the rest"));
+
+			return embed;
+		}
+
+		/// <summary>
+		/// Where an issue notification goes when nobody can be reached directly.
+		/// </summary>
+		/// <remarks>
+		/// The triage channel of every workflow the issue's streams define one for, since an issue can span streams
+		/// and each may triage separately. Falls back to the stream's own triage channel, then to the job channel,
+		/// which is what <see cref="DiscordChannelResolver"/> does with anything unmapped.
+		/// </remarks>
+		IReadOnlyList<DiscordDestination> ResolveIssueChannels(IIssue issue)
+		{
+			List<string> channels = new List<string>();
+			BuildConfig buildConfig = _buildConfig.CurrentValue;
+
+			foreach (IIssueStream stream in issue.Streams)
+			{
+				if (!buildConfig.TryGetStream(stream.StreamId, out StreamConfig? streamConfig))
+				{
+					continue;
+				}
+
+				foreach (WorkflowConfig workflow in streamConfig.Workflows)
+				{
+					if (!String.IsNullOrEmpty(workflow.TriageChannel))
+					{
+						channels.Add(workflow.TriageChannel);
+					}
+				}
+
+				if (!String.IsNullOrEmpty(streamConfig.TriageChannel))
+				{
+					channels.Add(streamConfig.TriageChannel);
+				}
+			}
+
+			return channels.Count > 0
+				? _channels.ResolveAll(channels.Distinct(StringComparer.Ordinal))
+				: _channels.ResolveCategory(DiscordChannelCategory.Job);
+		}
+
+		/// <summary>
+		/// Event id an issue's last announced state is remembered under.
+		/// </summary>
+		static string IssueEventId(IIssue issue) => $"issue:{issue.Id}";
+
+		/// <summary>
+		/// What counts as a change worth announcing.
+		/// </summary>
+		/// <remarks>
+		/// The fields a reader would notice, and nothing else. <c>LastSeenAt</c> and <c>UpdateIndex</c> are
+		/// deliberately absent: both move whenever the issue is touched, and including either would defeat the
+		/// suppression entirely.
+		/// </remarks>
+		static string DescribeIssueState(IIssue issue)
+			=> String.Join(
+				'|',
+				issue.Severity,
+				issue.OwnerId?.ToString() ?? "-",
+				issue.NominatedById?.ToString() ?? "-",
+				issue.AcknowledgedAt?.ToString("O") ?? "-",
+				issue.ResolvedAt?.ToString("O") ?? "-",
+				issue.VerifiedAt?.ToString("O") ?? "-",
+				issue.FixCommitId?.ToString() ?? "-",
+				issue.RootCauseCategory ?? "-",
+				issue.UserSummary ?? issue.Summary);
+
+		/// <summary>
+		/// One-line description of where an issue has got to.
+		/// </summary>
+		static string DescribeIssueStatus(IIssue issue)
+		{
+			if (issue.VerifiedAt != null)
+			{
+				return "Verified";
+			}
+
+			// Not "Fixed in X" - the commit has a field of its own, and saying it twice in one embed reads as two
+			// different facts.
+			if (issue.ResolvedAt != null)
+			{
+				return "Resolved";
+			}
+
+			if (issue.AcknowledgedAt != null)
+			{
+				return "Acknowledged";
+			}
+
+			return issue.OwnerId != null ? "Assigned" : "Unassigned";
+		}
+
+		static int IssueColor(IIssue issue)
+		{
+			if (issue.ResolvedAt != null)
+			{
+				return SuccessColor;
+			}
+
+			return issue.Severity == IssueSeverity.Warning ? WarningColor : FailureColor;
+		}
+
+		string IssuePrefix(IIssue issue)
+		{
+			if (issue.ResolvedAt != null)
+			{
+				return String.Empty;
+			}
+
+			return issue.Severity == IssueSeverity.Warning ? _serverConfig.WarningPrefix : _serverConfig.ErrorPrefix;
+		}
+
+		static string IssueBullet(IIssue issue)
+		{
+			if (issue.ResolvedAt != null)
+			{
+				return "🟢";
+			}
+
+			return issue.Severity == IssueSeverity.Warning ? "🟡" : "🔴";
+		}
+
+		Uri GetIssueUrl(int issueId) => new Uri(_serverInfo.DashboardUrl, $"issue/{issueId}");
 
 		#endregion
 
@@ -1104,7 +1470,22 @@ namespace HordeServer.Discord.Notifications
 		/// <param name="embed">What to post.</param>
 		/// <param name="forUsers">Users the notification was aimed at, named in plain text.</param>
 		/// <param name="cancellationToken">Cancellation token for the operation.</param>
-		public async Task SendAsync(IReadOnlyList<DiscordDestination> destinations, DiscordEmbedBuilder embed, IEnumerable<IUser>? forUsers, CancellationToken cancellationToken)
+		public Task SendAsync(IReadOnlyList<DiscordDestination> destinations, DiscordEmbedBuilder embed, IEnumerable<IUser>? forUsers, CancellationToken cancellationToken)
+			=> SendAsync(destinations, embed, forUsers, null, cancellationToken);
+
+		/// <summary>
+		/// Posts an embed, with buttons, to a set of resolved destinations.
+		/// </summary>
+		/// <remarks>
+		/// Only issue triage passes components. Everything else describes something that has already happened and
+		/// has nothing to offer the reader but a link.
+		/// </remarks>
+		/// <param name="destinations">Where to post.</param>
+		/// <param name="embed">What to post.</param>
+		/// <param name="forUsers">Users the notification was aimed at, named in plain text.</param>
+		/// <param name="components">Buttons to attach, or null for none.</param>
+		/// <param name="cancellationToken">Cancellation token for the operation.</param>
+		public async Task SendAsync(IReadOnlyList<DiscordDestination> destinations, DiscordEmbedBuilder embed, IEnumerable<IUser>? forUsers, DiscordComponentBuilder? components, CancellationToken cancellationToken)
 		{
 			if (!_serverConfig.IsConfigured || destinations.Count == 0)
 			{
@@ -1117,6 +1498,11 @@ namespace HordeServer.Discord.Notifications
 			foreach (DiscordDestination destination in destinations)
 			{
 				DiscordMessageBuilder message = new DiscordMessageBuilder().AddEmbed(built);
+
+				if (components != null && !components.IsEmpty)
+				{
+					message.WithComponents(components);
+				}
 
 				// A message in the catch-all says which Horde channel it was meant for. Without that the channel
 				// fills up with notifications nobody can trace back to a missing mapping.
@@ -1174,7 +1560,22 @@ namespace HordeServer.Discord.Notifications
 		/// <param name="fallback">Where to post for anyone who could not be reached.</param>
 		/// <param name="embed">What to send.</param>
 		/// <param name="cancellationToken">Cancellation token for the operation.</param>
-		public async Task SendToUsersAsync(IEnumerable<IUser>? users, IReadOnlyList<DiscordDestination> fallback, DiscordEmbedBuilder embed, CancellationToken cancellationToken)
+		public Task SendToUsersAsync(IEnumerable<IUser>? users, IReadOnlyList<DiscordDestination> fallback, DiscordEmbedBuilder embed, CancellationToken cancellationToken)
+			=> SendToUsersAsync(users, fallback, embed, null, cancellationToken);
+
+		/// <summary>
+		/// Sends a notification with buttons to each person it is addressed to, falling back to a channel.
+		/// </summary>
+		/// <remarks>
+		/// The buttons go on both copies. A triage action is the same action wherever it is taken from, and the
+		/// custom id carries everything needed to identify it - see <see cref="DiscordCustomId"/>.
+		/// </remarks>
+		/// <param name="users">People the notification is for.</param>
+		/// <param name="fallback">Where to post for anyone who could not be reached.</param>
+		/// <param name="embed">What to send.</param>
+		/// <param name="components">Buttons to attach, or null for none.</param>
+		/// <param name="cancellationToken">Cancellation token for the operation.</param>
+		public async Task SendToUsersAsync(IEnumerable<IUser>? users, IReadOnlyList<DiscordDestination> fallback, DiscordEmbedBuilder embed, DiscordComponentBuilder? components, CancellationToken cancellationToken)
 		{
 			if (!_serverConfig.IsConfigured)
 			{
@@ -1185,7 +1586,7 @@ namespace HordeServer.Discord.Notifications
 
 			if (recipients.Count == 0)
 			{
-				await SendAsync(fallback, embed, null, cancellationToken);
+				await SendAsync(fallback, embed, null, components, cancellationToken);
 				return;
 			}
 
@@ -1194,7 +1595,7 @@ namespace HordeServer.Discord.Notifications
 
 			foreach (IUser user in recipients)
 			{
-				if (!await TrySendDirectAsync(user, built, cancellationToken))
+				if (!await TrySendDirectAsync(user, built, components, cancellationToken))
 				{
 					unreachable.Add(user);
 				}
@@ -1202,7 +1603,7 @@ namespace HordeServer.Discord.Notifications
 
 			if (unreachable.Count > 0)
 			{
-				await SendAsync(fallback, embed, unreachable, cancellationToken);
+				await SendAsync(fallback, embed, unreachable, components, cancellationToken);
 			}
 		}
 
@@ -1218,7 +1619,18 @@ namespace HordeServer.Discord.Notifications
 		/// <param name="embed">What to send.</param>
 		/// <param name="cancellationToken">Cancellation token for the operation.</param>
 		/// <returns>True if the message was delivered.</returns>
-		public async Task<bool> TrySendDirectAsync(IUser user, DiscordEmbed embed, CancellationToken cancellationToken)
+		public Task<bool> TrySendDirectAsync(IUser user, DiscordEmbed embed, CancellationToken cancellationToken)
+			=> TrySendDirectAsync(user, embed, null, cancellationToken);
+
+		/// <summary>
+		/// Tries to send an embed with buttons to somebody as a direct message.
+		/// </summary>
+		/// <param name="user">Person to message.</param>
+		/// <param name="embed">What to send.</param>
+		/// <param name="components">Buttons to attach, or null for none.</param>
+		/// <param name="cancellationToken">Cancellation token for the operation.</param>
+		/// <returns>True if the message was delivered.</returns>
+		public async Task<bool> TrySendDirectAsync(IUser user, DiscordEmbed embed, DiscordComponentBuilder? components, CancellationToken cancellationToken)
 		{
 			if (!_serverConfig.IsConfigured)
 			{
@@ -1239,9 +1651,14 @@ namespace HordeServer.Discord.Notifications
 				return false;
 			}
 
-			DiscordMessage message = new DiscordMessageBuilder().AddEmbed(embed).Build();
+			DiscordMessageBuilder builder = new DiscordMessageBuilder().AddEmbed(embed);
 
-			return await _client.CreateMessageAsync(channelId, message, cancellationToken) != null;
+			if (components != null && !components.IsEmpty)
+			{
+				builder.WithComponents(components);
+			}
+
+			return await _client.CreateMessageAsync(channelId, builder.Build(), cancellationToken) != null;
 		}
 
 		/// <summary>

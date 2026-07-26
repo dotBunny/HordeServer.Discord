@@ -1,4 +1,4 @@
-// Copyright (c) 2026 dotBunny Inc. See the LICENSE file in the project root for more information.
+// Copyright (c) dotBunny Inc. See the LICENSE file in the project root for more information.
 
 using System.Collections.Concurrent;
 using HordeServer.Users;
@@ -25,6 +25,21 @@ namespace HordeServer.Discord.Notifications
 		/// <param name="cancellationToken">Cancellation token for the operation.</param>
 		/// <returns>The user's Discord snowflake, or null if nothing knows it.</returns>
 		ValueTask<string?> GetUserIdAsync(IUser user, CancellationToken cancellationToken);
+
+		/// <summary>
+		/// Finds the email a Discord account is mapped to, so a button press can be attributed to a Horde user.
+		/// </summary>
+		/// <remarks>
+		/// The map read backwards. Outbound notifications only ever need Horde user → Discord account, but an
+		/// interaction arrives carrying nothing but a snowflake, and every issue operation is audited against a
+		/// Horde user. Email is the join, exactly as it is in the forward direction.
+		///
+		/// Two Horde accounts mapped to one Discord account would make this ambiguous. Nothing prevents that in
+		/// configuration, so the implementation is expected to be deterministic rather than to guess.
+		/// </remarks>
+		/// <param name="discordUserId">Discord snowflake of whoever acted.</param>
+		/// <returns>The email address they are mapped to, or null if the map does not name them.</returns>
+		string? GetEmail(string discordUserId);
 
 		/// <summary>
 		/// Finds the Discord role standing in for one of Horde's user-group handles.
@@ -91,6 +106,37 @@ namespace HordeServer.Discord.Notifications
 
 			Report(user, $"'{user.Email}' is not in the userMap");
 			return null;
+		}
+
+		/// <inheritdoc/>
+		public string? GetEmail(string discordUserId)
+		{
+			if (String.IsNullOrEmpty(discordUserId))
+			{
+				return null;
+			}
+
+			// Ordered so that a map naming one Discord account twice resolves the same way on every server and every
+			// restart. It is still a misconfiguration, but a deterministic one is far easier to recognise than an
+			// action that is attributed to a different person each time it is taken.
+			string? match = null;
+
+			foreach ((string email, string userId) in _config.CurrentValue.ResolvedUsers)
+			{
+				if (String.Equals(userId, discordUserId, StringComparison.Ordinal)
+					&& (match == null || String.CompareOrdinal(email, match) < 0))
+				{
+					match = email;
+				}
+			}
+
+			if (match == null)
+			{
+				_logger.LogWarning("Discord user {DiscordUserId} is not in the userMap, so their action cannot be "
+					+ "attributed to a Horde user.", discordUserId);
+			}
+
+			return match;
 		}
 
 		/// <inheritdoc/>

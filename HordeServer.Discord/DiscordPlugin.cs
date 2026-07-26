@@ -1,4 +1,4 @@
-// Copyright (c) 2026 dotBunny Inc. See the LICENSE file in the project root for more information.
+// Copyright (c) dotBunny Inc. See the LICENSE file in the project root for more information.
 
 using HordeServer.Discord.Client;
 using HordeServer.Discord.Notifications;
@@ -60,6 +60,12 @@ namespace HordeServer
 			// constructed, so without this the buttons would simply not work.
 			serviceCollection.AddSingleton<DiscordInteractionRouter>();
 			serviceCollection.AddSingleton<IHostedService>(sp => sp.GetRequiredService<DiscordInteractionRouter>());
+
+			// What makes the triage buttons do something. Behind IHordeIssues because Horde's IssueService is a
+			// concrete class that reaches MongoDB in its constructor, and this repo's tests run without one.
+			serviceCollection.AddSingleton<IHordeIssues, HordeIssues>();
+			serviceCollection.AddSingleton<DiscordIssueTriage>();
+			serviceCollection.AddSingleton<IHostedService>(sp => sp.GetRequiredService<DiscordIssueTriage>());
 
 			serviceCollection.AddSingleton<DiscordChannelResolver>();
 
