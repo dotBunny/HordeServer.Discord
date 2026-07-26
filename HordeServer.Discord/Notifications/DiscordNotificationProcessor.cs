@@ -610,7 +610,7 @@ namespace HordeServer.Discord.Notifications
 
 			DiscordEmbedBuilder embed = new DiscordEmbedBuilder()
 				.WithTitle($"{IssuePrefix(issue)}Issue {issue.Id}: {Escape(summary)}")
-				.WithUrl(GetIssueUrl(issue.Id).ToString())
+				.WithUrl(GetIssueUrl(issue.Id, IssueStream(issue)).ToString())
 				.WithColor(IssueColor(issue));
 
 			if (!String.IsNullOrEmpty(issue.Description) && issue.Description != summary)
@@ -676,7 +676,7 @@ namespace HordeServer.Discord.Notifications
 					DiscordButtonStyle.Primary);
 			}
 
-			buttons.AddLink(GetIssueUrl(issue.Id).ToString(), "Open in Horde");
+			buttons.AddLink(GetIssueUrl(issue.Id, IssueStream(issue)).ToString(), "Open in Horde");
 
 			return buttons;
 		}
@@ -710,7 +710,9 @@ namespace HordeServer.Discord.Notifications
 				"Issues",
 				Summarise(
 					[.. report.Issues.OrderBy(x => x.Id)],
-					x => $"{IssueBullet(x)} [Issue {x.Id}]({GetIssueUrl(x.Id)}) {Escape(FirstLine(String.IsNullOrEmpty(x.UserSummary) ? x.Summary : x.UserSummary))}",
+					// The report's own stream, not IssueStream's pick - this report is about one stream, so a link
+					// that opened over a different one would contradict the embed it sits in.
+					x => $"{IssueBullet(x)} [Issue {x.Id}]({GetIssueUrl(x.Id, report.StreamId)}) {Escape(FirstLine(String.IsNullOrEmpty(x.UserSummary) ? x.Summary : x.UserSummary))}",
 					MaxIssuesPerReport,
 					"see the dashboard for the rest"));
 
@@ -893,7 +895,38 @@ namespace HordeServer.Discord.Notifications
 			return issue.Severity == IssueSeverity.Warning ? "🟡" : "🔴";
 		}
 
-		Uri GetIssueUrl(int issueId) => new Uri(_serverInfo.DashboardUrl, $"issue/{issueId}");
+		/// <summary>
+		/// Link that opens an issue on the dashboard, anchored to a stream.
+		/// </summary>
+		/// <remarks>
+		/// **There is no <c>issue/{id}</c> route.** The dashboard has no page of its own for an issue - it opens one
+		/// as a modal over an existing page - so every issue link is a page plus <c>?issue={id}</c>. A path matching
+		/// no route does not 404 either; it redirects to <c>/index</c>, so the mistake reads as the link quietly
+		/// going nowhere rather than as a broken URL.
+		///
+		/// Epic's Slack sink anchors the modal to the failing step's job, which costs it a span lookup. We hold only
+		/// an <see cref="IIssue"/>, and its <c>Streams</c> reach the stream summary for free. Issue ids are unique
+		/// server-wide, so the anchor decides only where the reader lands behind the modal, never which issue opens.
+		/// </remarks>
+		/// <param name="issueId">Issue to link to.</param>
+		/// <param name="streamId">Stream to open the modal over, or null if none is known.</param>
+		Uri GetIssueUrl(int issueId, StreamId? streamId)
+			=> streamId == null
+				? _serverInfo.DashboardUrl
+				: new Uri(_serverInfo.DashboardUrl, $"stream/{streamId.Value}?tab=summary&issue={issueId}");
+
+		/// <summary>
+		/// The stream an issue's link opens over.
+		/// </summary>
+		/// <remarks>
+		/// An issue crosses streams, so this picks one. Ordering rather than taking the list's first keeps the choice
+		/// stable: a triage message is rewritten in place as the issue changes, and a link that moved between renders
+		/// would look like it had started pointing somewhere else.
+		/// </remarks>
+		static StreamId? IssueStream(IIssue issue)
+			=> issue.Streams.Count == 0
+				? null
+				: issue.Streams.Select(x => x.StreamId).OrderBy(x => x.ToString(), StringComparer.Ordinal).First();
 
 		#endregion
 

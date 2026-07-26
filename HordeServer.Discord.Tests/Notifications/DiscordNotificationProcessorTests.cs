@@ -1502,6 +1502,80 @@ namespace HordeServer.Discord.Tests.Notifications
 				"Recording a thread that does not exist would send every later update into nothing.");
 		}
 
+		[TestMethod]
+		public async Task AnIssueLinksToAStreamSummaryTheDashboardActuallyHas()
+		{
+			Harness harness = new Harness();
+
+			await harness.Processor.NotifyIssueUpdatedAsync(
+				IssueFakes.Issue(42, "Compile error in Core", "ue5-main"), default);
+
+			// The dashboard has no issue/{id} route - it opens an issue as a modal over an existing page. Worse, a
+			// path matching no route does not 404, it redirects to /index, so the wrong shape here looks like
+			// nothing at all is wrong until somebody presses the button and lands on their home page.
+			const string Expected = "https://horde.example.com/stream/ue5-main?tab=summary&issue=42";
+
+			Assert.AreEqual(Expected, harness.Handler.Embed(0).GetProperty("url").GetString());
+			CollectionAssert.Contains(LinkUrls(harness, 0), Expected,
+				"The 'Open in Horde' button has to go the same place as the title.");
+		}
+
+		[TestMethod]
+		public void AnIssueSpanningStreamsPicksTheSameOneEveryTime()
+		{
+			Harness harness = new Harness();
+
+			// A triage message is rewritten in place as the issue changes, so an unordered pick would make its link
+			// appear to wander between one render and the next.
+			string first = IssueUrl(harness, IssueFakes.Issue(42, "Compile error in Core", "ue5-release", "ue5-main"));
+			string second = IssueUrl(harness, IssueFakes.Issue(42, "Compile error in Core", "ue5-main", "ue5-release"));
+
+			Assert.AreEqual("https://horde.example.com/stream/ue5-main?tab=summary&issue=42", first);
+			Assert.AreEqual(first, second);
+		}
+
+		[TestMethod]
+		public void AnIssueWithNoStreamStillLinksSomewhereReal()
+		{
+			Harness harness = new Harness();
+
+			// Nothing to anchor the modal to, so the dashboard root - which is where Epic's Slack sink also stops.
+			Assert.AreEqual("https://horde.example.com/",
+				IssueUrl(harness, IssueFakes.Issue(42, "Compile error in Core")));
+		}
+
+		/// <summary>
+		/// The url an issue's embed title points at.
+		/// </summary>
+		static string IssueUrl(Harness harness, FakeIssue issue)
+			=> harness.Processor.BuildIssueMessage(issue).Embeds![0].Url!;
+
+		/// <summary>
+		/// The urls of every link button on a recorded message.
+		/// </summary>
+		static List<string> LinkUrls(Harness harness, int index)
+		{
+			List<string> urls = new List<string>();
+
+			if (!harness.Handler.Message(index).TryGetProperty("components", out JsonElement rows))
+			{
+				return urls;
+			}
+
+			foreach (JsonElement row in rows.EnumerateArray())
+			{
+				foreach (JsonElement component in row.GetProperty("components").EnumerateArray())
+				{
+					if (component.TryGetProperty("url", out JsonElement url))
+					{
+						urls.Add(url.GetString()!);
+					}
+				}
+			}
+
+			return urls;
+		}
+
 		/// <summary>
 		/// The custom ids of every button on a recorded message, link buttons excluded.
 		/// </summary>

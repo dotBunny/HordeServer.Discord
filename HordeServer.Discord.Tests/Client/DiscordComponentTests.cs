@@ -78,14 +78,14 @@ namespace HordeServer.Discord.Tests.Client
 		public void ALinkButtonCarriesNoCustomId()
 		{
 			List<DiscordComponent> rows = new DiscordComponentBuilder()
-				.AddLink("https://horde.example.com/issue/1", "Open in Horde")
+				.AddLink("https://horde.example.com/stream/ue5-main?tab=summary&issue=1", "Open in Horde")
 				.Build()!;
 
 			DiscordComponent button = rows[0].Components![0];
 
 			Assert.AreEqual(DiscordButtonStyle.Link, button.Style);
 			Assert.IsNull(button.CustomId, "Discord rejects a link button that also has a custom id.");
-			Assert.AreEqual("https://horde.example.com/issue/1", button.Url);
+			Assert.AreEqual("https://horde.example.com/stream/ue5-main?tab=summary&issue=1", button.Url);
 		}
 
 		[TestMethod]

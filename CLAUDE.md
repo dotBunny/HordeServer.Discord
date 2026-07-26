@@ -326,6 +326,24 @@ rebuild — a stale DLL against a newer server fails at plugin load rather than 
   normally. Discord will happily open that channel and *then* refuse the message with 50007 if the
   recipient does not accept DMs from server members, so a fallback hung off the channel lookup alone
   would silently drop notifications.
+- **The dashboard has no page for an issue, and a bad path redirects instead of failing.** There is no
+  `issue/{id}` route — an issue opens as a *modal over an existing page*, so every issue link is some
+  page plus `?issue={id}`. The route table is `HordeDashboard/src/App.tsx:142-178`, and its
+  `errorElement` is literally `<Navigate to="/index" replace={true} />` (`App.tsx:53-55`), so an
+  unmatched path silently lands the reader on their home page rather than 404-ing. `issue/{id}` shipped
+  and survived four phases looking exactly like a link that does nothing. Epic's Slack sink anchors to
+  the failing step's job — `job/{jobId}?step={stepId}&issue={id}`, `SlackNotificationSink.cs:1776-1779`
+  — which needs the issue's spans; we hold only an `IIssue`, so we use `stream/{streamId}?tab=summary&issue={id}`
+  from its `Streams` list at no extra cost, and fall back to the bare dashboard root when an issue has
+  no streams. **Verify any new dashboard link against that route table**, remembering that dashboard
+  *plugins* push extra routes in at `App.tsx:183-184` — that is why `test-automation` is valid despite
+  being absent from the main list.
+- **Issue ids are unique server-wide, not per stream or project.** They come from one singleton counter
+  (`IssueCollection.cs:39-43`, `826-831`) and are the Mongo `[BsonId]` of `IssuesV2`. An issue also
+  *crosses* streams — `IIssue.Streams` is a list — so no stream is "the" stream for one. Which stream a
+  link is anchored to therefore decides only where the reader lands behind the modal, never which issue
+  opens; pick one deterministically, because triage messages are rewritten in place and a link that
+  moved between renders reads as a bug.
 - **Horde takes the first non-null deep link from any sink and ignores the rest.**
   `NotificationService.GetDirectMessageLinkAsync` / `GetChannelLinkAsync` iterate sinks in registration
   order, which a plugin does not control. Answering unconditionally would decide by luck whether a
