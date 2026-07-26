@@ -4,7 +4,7 @@
 > All seventeen `INotificationSink` members deliver. The gateway holds a session, triage buttons call
 > Horde's `IssueService`, the hybrid Mark Fixed modal round-trips, and each issue keeps one message in
 > a thread that is rewritten as it changes. What remains is the deliberate non-goals in §3.4 and the
-> `/link` slash command deferred in §7.
+> `/link` slash command deferred in §7 — plus one parity gap, role mentions (§3.3.7).
 >
 > Every phase gate found something the unit tests could not: emoji shortcodes Slack resolves and
 > Discord does not (Phase 3), a smoke tool structurally incapable of failing (Phase 3), and a modal
@@ -829,7 +829,7 @@ and tested directly, which leaves those members as thin wrappers over covered co
 > A bot can only DM users who share a guild with it. Unmapped or un-DMable users must fall back to a
 > channel mention, never silently drop.
 
-### Phase 4 — Gateway + interactive issue triage ✅ **COMPLETE, VERIFIED AGAINST DISCORD 2026-07-26**
+### Phase 4 — Gateway + interactive issue triage ⚠️ **BUILT AND VERIFIED 2026-07-26, one parity gap (role mentions)**
 `DiscordGateway` (identify / heartbeat with jitter / resume with session id + sequence / resumable
 vs. terminal close codes / backoff). `NotifyIssueUpdatedAsync` and `SendIssueReportAsync` building
 the triage thread (§3.3.6) with action-row buttons, plus DM variants carrying their own buttons.
@@ -926,8 +926,10 @@ field that is not a `discord.com` link is left strictly alone and the notificati
 flat post — the cost of being wrong there is a studio's Slack triage links being destroyed, which is
 worth a branch.
 
-Phase 4 is complete. What remains across the whole plan is the deliberate non-goals in §3.4 and the
-`/link` slash command deferred in §7.
+**One parity gap remains in this phase**, and it is not the thread work: nothing mentions a Discord
+role. `GetRoleId`, the `roles` map and `DiscordRoutingReport`'s gap warnings were all built in Phase 3
+in anticipation, but no code path calls them — so an issue with nobody assigned reaches the triage
+channel without pinging the workflow's `triageAlias`, which Slack does. See §3.3.7.
 
 Interaction handler mapping component `custom_id`s to the same `IssueService` calls the Slack sink
 makes — `ack` / `accept` / `decline`, in both DM and channel flavours (Slack keeps two handlers,
@@ -995,5 +997,9 @@ All blocking design questions are settled — see the decisions table in §2.
 - **`/link` slash command** for self-service user mapping — the resolver interface leaves room for it
   as a second provider; the static map stays as the fallback.
 - **Multi-guild** — additive if the posting path never takes a guild id.
-- **Discord threads vs. edit-in-place** for triage — recommendation is real threads (§3.3.6), worth
-  re-checking against Discord's auto-archive behaviour once Phase 4 starts.
+- **Discord threads vs. edit-in-place** for triage — *resolved 2026-07-26: both.* Real threads, with
+  the parent message rewritten in place. Auto-archive is set to the 7-day maximum; see §3.3.6.
+- **Triage role mentions (§3.3.7)** — the `roles` map, `IDiscordUserResolver.GetRoleId` and the
+  startup gap report are all in place, but **nothing mentions a role yet**. Slack pings a workflow's
+  `triageAlias` when an issue has nobody assigned; the Discord equivalent is a `<@&roleId>` in the
+  triage thread. This is the last real parity gap in Phase 4.
