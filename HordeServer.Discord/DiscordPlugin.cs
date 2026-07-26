@@ -52,6 +52,12 @@ namespace HordeServer
 
 			serviceCollection.AddSingleton<DiscordChannelResolver>();
 
+			// Behind its interface so a /link slash command can be added later as a second provider without
+			// touching anything that consumes it. The concrete type is registered too, because the routing report
+			// asks it about the role map rather than about a person.
+			serviceCollection.AddSingleton<DiscordUserResolver>();
+			serviceCollection.AddSingleton<IDiscordUserResolver>(sp => sp.GetRequiredService<DiscordUserResolver>());
+
 			// A singleton on purpose: it exists to remember what has already been said, which a per-request instance
 			// could not do. Constructed by hand only so the clock stays an optional constructor parameter, which is
 			// what lets the tests drive expiry without waiting a week.

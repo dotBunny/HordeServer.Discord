@@ -13,9 +13,10 @@ into a Horde server's application directory — no changes to Horde or to Unreal
 
 **The design and roadmap live in [`.claude/PLAN.md`](.claude/PLAN.md). Read it before doing
 substantive work** — it records the architecture investigation (with engine file/line references),
-the decisions taken and why, and the phase breakdown. Current status: **Phases 0–2 complete** — every
-broadcast member of `INotificationSink` delivers, formatting unverified against a real Discord server.
-Phase 3 is users, mentions and DMs; Phase 4 is the gateway and interactive issue triage.
+the decisions taken and why, and the phase breakdown. Current status: **Phases 0–3 complete** — fifteen
+of the seventeen `INotificationSink` members deliver, with DMs and mentions, all unverified against a
+real Discord server. Phase 4 is the gateway and interactive issue triage, and it needs a real Discord
+application to develop against.
 
 ## The two trees
 
@@ -133,6 +134,10 @@ in its types.
   diffable, mirroring how the Experimental plugin splits its Slack sink from its processor. Its
   `#region`s mirror the sink's, so the two files read side by side. `SendAsync` is its single exit
   point; everything goes through it, including the single-destination `SendToAsync`.
+- **`Notifications/DiscordUserResolver`** — which Discord account belongs to a Horde user, and which
+  Discord role stands in for one of Horde's user-group aliases. Behind `IDiscordUserResolver` so a
+  `/link` slash command can join it as a second provider. Deliberately **not** cached — it reads a
+  dictionary out of the hot-reloadable config, and a cache would only delay the reload.
 - **`Notifications/DiscordRepeatFilter`** — what has already been announced, keyed by event id and
   state digest. Some notifications describe a *state* rather than an event and arrive on a ticker; a
   config failure would otherwise be reposted every pass. It also gates the recovery messages, which are
@@ -206,6 +211,21 @@ rebuild — a stale DLL against a newer server fails at plugin load rather than 
   The agreed resolution is in `PLAN.md` §3.3.4.
 - **Discord has no lookup-user-by-email**, so the Horde-user → Discord-user association must be
   supplied by configuration. See `PLAN.md` §3.3.1.
+- **A DM is a channel, and opening one can succeed while sending still fails.** There is no
+  send-to-user endpoint: `POST /users/@me/channels` opens a two-member channel, then you post to it
+  normally. Discord will happily open that channel and *then* refuse the message with 50007 if the
+  recipient does not accept DMs from server members, so a fallback hung off the channel lookup alone
+  would silently drop notifications.
+- **Horde takes the first non-null deep link from any sink and ignores the rest.**
+  `NotificationService.GetDirectMessageLinkAsync` / `GetChannelLinkAsync` iterate sinks in registration
+  order, which a plugin does not control. Answering unconditionally would decide by luck whether a
+  studio's dashboard buttons opened Discord or Slack, so `DiscordServerConfig.EnableDeepLinks` defaults
+  to answering only when the Build plugin has no `SlackToken`.
+- **The four user-targeted job/step members are DMs, not channel posts.** Slack sends them per
+  subscriber, and a subscription notification broadcast to a shared channel makes that channel unusable
+  on a busy stream. Phase 1 posted them to the job channel as an interim; Phase 3 corrected it. If you
+  are adding a member that takes an `IUser` or `usersToNotify`, it almost certainly wants
+  `SendToUsersAsync` rather than `SendAsync`.
 
 ## Documentation split
 

@@ -46,6 +46,21 @@ namespace HordeServer
 		public bool EnableInteractions { get; set; } = true;
 
 		/// <summary>
+		/// Whether the dashboard's "message these people" and "open this channel" buttons should point at Discord.
+		/// </summary>
+		/// <remarks>
+		/// Leave unset unless you mean to change it. Horde asks every notification sink for a deep link and takes the
+		/// **first non-null answer**, ignoring the rest, in an order no plugin controls - so a Discord plugin that
+		/// always answered would decide, by luck of registration, whether an existing Slack deployment's dashboard
+		/// buttons still opened Slack.
+		///
+		/// Unset therefore means *automatic*: links are provided only when the Build plugin has no <c>SlackToken</c>,
+		/// which is exactly when nothing else would answer. Set it to <c>true</c> to make Discord the dashboard's
+		/// chat target even alongside Slack, or <c>false</c> to stay out of it entirely.
+		/// </remarks>
+		public bool? EnableDeepLinks { get; set; }
+
+		/// <summary>
 		/// Channel to send job related notifications to. Multiple channels can be specified, separated by <c>;</c>.
 		/// </summary>
 		/// <remarks>

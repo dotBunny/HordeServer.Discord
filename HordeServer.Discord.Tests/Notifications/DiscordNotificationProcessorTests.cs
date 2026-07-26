@@ -1,5 +1,6 @@
 // Copyright (c) 2026 dotBunny Inc. See the LICENSE file in the project root for more information.
 
+using System.Net;
 using System.Text.Json;
 using EpicGames.Horde.Agents;
 using EpicGames.Horde.Users;
@@ -10,6 +11,7 @@ using HordeServer.Discord.Client;
 using HordeServer.Discord.Notifications;
 using HordeServer.Discord.Tests.Client;
 using HordeServer.Plugins;
+using HordeServer.Users;
 using HordeTestDoubles;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -36,8 +38,12 @@ namespace HordeServer.Discord.Tests.Notifications
 		const string DeviceChannel = "100000000000000003";
 		const string UpdateStreamsChannel = "100000000000000004";
 		const string WorkflowChannel = "100000000000000005";
+		const string GuildId = "100000000000000009";
 
 		const string WorkflowSlackId = "C0832ESJUR5";
+
+		const string AdaEmail = "ada@example.com";
+		const string AdaDiscordId = "200000000000000001";
 
 		#region Configuration
 
@@ -497,7 +503,7 @@ namespace HordeServer.Discord.Tests.Notifications
 		[TestMethod]
 		public async Task AnUnroutableNotificationIsDroppedRatherThanThrown()
 		{
-			Harness harness = new Harness(channels: new DiscordConfig(), agentChannel: null);
+			Harness harness = new Harness(config: Harness.PostLoad(new DiscordConfig()), agentChannel: null);
 
 			await harness.Processor.SendSessionConflictReportAsync([(new AgentId("build-07"), 42)], default);
 
@@ -505,6 +511,292 @@ namespace HordeServer.Discord.Tests.Notifications
 		}
 
 		#endregion
+
+		#region Mentions
+
+		[TestMethod]
+		public async Task AMappedPersonIsMentionedRatherThanNamed()
+		{
+			Harness harness = new Harness(config: Harness.Mapped((AdaEmail, AdaDiscordId)));
+
+			await harness.Processor.SendAsync(Channel(), Embed(), [HordeFakes.User("Ada Lovelace", AdaEmail)], default);
+
+			Assert.AreEqual($"For <@{AdaDiscordId}>", harness.Handler.Message(0).GetProperty("content").GetString());
+		}
+
+		[TestMethod]
+		public async Task OnlyThePeopleTheNotificationIsAboutMayBePinged()
+		{
+			Harness harness = new Harness(config: Harness.Mapped((AdaEmail, AdaDiscordId)));
+
+			await harness.Processor.SendAsync(Channel(), Embed(), [HordeFakes.User("Ada Lovelace", AdaEmail)], default);
+
+			JsonElement allowed = harness.Handler.Message(0).GetProperty("allowed_mentions");
+
+			Assert.AreEqual(0, allowed.GetProperty("parse").GetArrayLength(),
+				"Nothing is parsed out of the content - a step name or an error line must never ping anyone.");
+			Assert.AreEqual(AdaDiscordId, allowed.GetProperty("users")[0].GetString());
+		}
+
+		[TestMethod]
+		public async Task AnUnmappedPersonIsStillNamed()
+		{
+			Harness harness = new Harness();
+
+			await harness.Processor.SendAsync(Channel(), Embed(), [HordeFakes.User("Ada Lovelace", AdaEmail)], default);
+
+			Assert.AreEqual("For Ada Lovelace", harness.Handler.Message(0).GetProperty("content").GetString(),
+				"A half-filled map costs a mention, never a notification.");
+			Assert.IsFalse(harness.Handler.Message(0).GetProperty("allowed_mentions").TryGetProperty("users", out _));
+		}
+
+		[TestMethod]
+		public async Task AMixedGroupIsPartlyMentionedAndPartlyNamed()
+		{
+			Harness harness = new Harness(config: Harness.Mapped((AdaEmail, AdaDiscordId)));
+
+			await harness.Processor.SendAsync(
+				Channel(),
+				Embed(),
+				[HordeFakes.User("Ada Lovelace", AdaEmail), HordeFakes.User("Grace Hopper", "grace@example.com")],
+				default);
+
+			Assert.AreEqual($"For <@{AdaDiscordId}>, Grace Hopper", harness.Handler.Message(0).GetProperty("content").GetString());
+		}
+
+		[TestMethod]
+		public async Task TheSamePersonTwiceIsAddressedOnce()
+		{
+			Harness harness = new Harness(config: Harness.Mapped((AdaEmail, AdaDiscordId)));
+			IUser ada = HordeFakes.User("Ada Lovelace", AdaEmail);
+
+			await harness.Processor.SendAsync(Channel(), Embed(), [ada, ada], default);
+
+			Assert.AreEqual($"For <@{AdaDiscordId}>", harness.Handler.Message(0).GetProperty("content").GetString());
+		}
+
+		#endregion
+
+		#region Direct messages
+
+		[TestMethod]
+		public async Task AMappedPersonIsMessagedDirectly()
+		{
+			Harness harness = Reachable();
+
+			await harness.Processor.SendToUsersAsync([HordeFakes.User("Ada Lovelace", AdaEmail)], Channel(), Embed(), default);
+
+			Assert.AreEqual(2, harness.Handler.Requests.Count);
+			StringAssert.Contains(harness.Handler.Requests[0].Uri, "users/@me/channels",
+				"A Discord DM is an ordinary channel that has to be opened before it can be posted to.");
+			StringAssert.Contains(harness.Handler.Requests[1].Uri, $"channels/{DmChannel}/messages");
+		}
+
+		[TestMethod]
+		public async Task ADirectMessageDoesNotAlsoGoToTheChannel()
+		{
+			Harness harness = Reachable();
+
+			await harness.Processor.SendToUsersAsync([HordeFakes.User("Ada Lovelace", AdaEmail)], Channel(), Embed(), default);
+
+			Assert.IsFalse(harness.Handler.Requests.Any(x => x.Uri.Contains(AgentChannel, StringComparison.Ordinal)),
+				"Broadcasting a subscription notification as well as sending it is what makes a job channel unusable.");
+		}
+
+		[TestMethod]
+		public async Task AnUnmappedPersonFallsBackToTheChannel()
+		{
+			Harness harness = new Harness();
+
+			await harness.Processor.SendToUsersAsync([HordeFakes.User("Ada Lovelace", AdaEmail)], Channel(), Embed(), default);
+
+			Assert.AreEqual(1, harness.Handler.Requests.Count);
+			StringAssert.Contains(harness.Handler.Requests[0].Uri, $"channels/{AgentChannel}/messages");
+			Assert.AreEqual("For Ada Lovelace", harness.Handler.Message(0).GetProperty("content").GetString());
+		}
+
+		[TestMethod]
+		public async Task ARefusedDirectMessageChannelFallsBackToTheChannel()
+		{
+			// 403 is what Discord returns when the bot shares no guild with someone, or they have direct messages
+			// from server members turned off. Both are ordinary states, not errors.
+			Harness harness = new Harness(
+				config: Harness.Mapped((AdaEmail, AdaDiscordId)),
+				responses: RecordingHttpHandler.Json(HttpStatusCode.Forbidden, """{"message":"Cannot send messages to this user","code":50007}"""));
+
+			await harness.Processor.SendToUsersAsync([HordeFakes.User("Ada Lovelace", AdaEmail)], Channel(), Embed(), default);
+
+			Assert.AreEqual(2, harness.Handler.Requests.Count);
+			StringAssert.Contains(harness.Handler.Requests[1].Uri, $"channels/{AgentChannel}/messages");
+			Assert.AreEqual($"For <@{AdaDiscordId}>", harness.Handler.Message(1).GetProperty("content").GetString(),
+				"They are known, just not reachable directly - so the channel post can still ping them.");
+		}
+
+		[TestMethod]
+		public async Task ARejectedDirectMessageAlsoFallsBack()
+		{
+			Harness harness = new Harness(
+				config: Harness.Mapped((AdaEmail, AdaDiscordId)),
+				responses:
+				[
+					RecordingHttpHandler.Json(HttpStatusCode.OK, $$"""{"id":"{{DmChannel}}"}"""),
+					RecordingHttpHandler.Json(HttpStatusCode.Forbidden, """{"message":"Cannot send messages to this user","code":50007}"""),
+				]);
+
+			await harness.Processor.SendToUsersAsync([HordeFakes.User("Ada Lovelace", AdaEmail)], Channel(), Embed(), default);
+
+			Assert.AreEqual(3, harness.Handler.Requests.Count,
+				"Opening the channel can succeed and the send still be refused, so the fallback cannot hang off the "
+				+ "channel lookup alone.");
+			StringAssert.Contains(harness.Handler.Requests[2].Uri, $"channels/{AgentChannel}/messages");
+		}
+
+		[TestMethod]
+		public async Task TheDirectMessageChannelIsLookedUpOnce()
+		{
+			Harness harness = Reachable();
+			IUser ada = HordeFakes.User("Ada Lovelace", AdaEmail);
+
+			await harness.Processor.SendToUsersAsync([ada], Channel(), Embed(), default);
+			await harness.Processor.SendToUsersAsync([ada], Channel(), Embed(), default);
+
+			Assert.AreEqual(1, harness.Handler.Requests.Count(x => x.Uri.Contains("users/@me/channels", StringComparison.Ordinal)),
+				"Opening a DM is idempotent and returns the same channel, so re-asking on every notification is pure waste.");
+		}
+
+		[TestMethod]
+		public async Task NobodyToAddressMeansTheChannel()
+		{
+			Harness harness = new Harness();
+
+			await harness.Processor.SendToUsersAsync(null, Channel(), Embed(), default);
+
+			Assert.AreEqual(1, harness.Handler.Requests.Count);
+			StringAssert.Contains(harness.Handler.Requests[0].Uri, $"channels/{AgentChannel}/messages");
+		}
+
+		[TestMethod]
+		public async Task TheConfigFailureAuthorGetsBothTheChannelPostAndAMessage()
+		{
+			Harness harness = new Harness(
+				config: Harness.Mapped((AdaEmail, AdaDiscordId)),
+				responses:
+				[
+					RecordingHttpHandler.Json(HttpStatusCode.OK, """{"id":"9"}"""),
+					RecordingHttpHandler.Json(HttpStatusCode.OK, $$"""{"id":"{{DmChannel}}"}"""),
+				]);
+
+			await harness.Processor.NotifyConfigUpdateFailureAsync("broken", "globals.json", 42, HordeFakes.User("Ada Lovelace", AdaEmail), null, default);
+
+			Assert.AreEqual(3, harness.Handler.Requests.Count);
+			StringAssert.Contains(harness.Handler.Requests[0].Uri, $"channels/{UpdateStreamsChannel}/messages",
+				"The team needs to know the configuration is stale.");
+			StringAssert.Contains(harness.Handler.Requests[2].Uri, $"channels/{DmChannel}/messages",
+				"And the person who broke it should not have to be watching a channel to find out.");
+		}
+
+		[TestMethod]
+		public async Task ADeviceReminderIsPrivateWhenItCanBe()
+		{
+			Harness harness = Reachable();
+
+			await harness.Processor.NotifyDeviceServiceAsync("Your checkout expires in 24 hours.", null, null, null, null, null, null, HordeFakes.User("Ada Lovelace", AdaEmail), default);
+
+			Assert.AreEqual(2, harness.Handler.Requests.Count);
+			StringAssert.Contains(harness.Handler.Requests[1].Uri, $"channels/{DmChannel}/messages");
+		}
+
+		#endregion
+
+		#region Deep links
+
+		[TestMethod]
+		public async Task DeepLinksStayOutOfTheWayWhenSlackIsRunning()
+		{
+			Harness harness = new Harness(config: Harness.Mapped((AdaEmail, AdaDiscordId)), slackToken: "xoxb-something");
+
+			Assert.IsNull(await harness.Processor.GetChannelLinkAsync(WorkflowSlackId, default),
+				"Horde takes the first non-null answer from any sink, so answering here would decide by luck of "
+				+ "registration order whether the dashboard's buttons still opened Slack.");
+		}
+
+		[TestMethod]
+		public async Task DeepLinksAreProvidedWhenNothingElseWould()
+		{
+			Harness harness = new Harness(config: Harness.Mapped());
+
+			Assert.AreEqual($"https://discord.com/channels/{GuildId}/{WorkflowChannel}",
+				await harness.Processor.GetChannelLinkAsync(WorkflowSlackId, default));
+		}
+
+		[TestMethod]
+		public async Task DeepLinksCanBeTurnedOnAlongsideSlack()
+		{
+			Harness harness = new Harness(config: Harness.Mapped(), slackToken: "xoxb-something", enableDeepLinks: true);
+
+			Assert.IsNotNull(await harness.Processor.GetChannelLinkAsync(WorkflowSlackId, default));
+		}
+
+		[TestMethod]
+		public async Task AnUnmappedChannelHasNoLink()
+		{
+			Harness harness = new Harness(config: Harness.Mapped());
+
+			Assert.IsNull(await harness.Processor.GetChannelLinkAsync("C0ZZZZZZZZZ", default),
+				"Linking to the catch-all would be a link that works and is wrong.");
+		}
+
+		[TestMethod]
+		public async Task ADirectMessageLinkOpensTheConversation()
+		{
+			FakeUserCollection users = new FakeUserCollection();
+			UserId ada = users.Add(HordeFakes.User("Ada Lovelace", AdaEmail));
+
+			Harness harness = new Harness(
+				users,
+				Harness.Mapped((AdaEmail, AdaDiscordId)),
+				responses: RecordingHttpHandler.Json(HttpStatusCode.OK, $$"""{"id":"{{DmChannel}}"}"""));
+
+			Assert.AreEqual($"https://discord.com/channels/@me/{DmChannel}",
+				await harness.Processor.GetDirectMessageLinkAsync([ada], default));
+		}
+
+		[TestMethod]
+		public async Task ThereIsNoLinkForAGroupConversation()
+		{
+			FakeUserCollection users = new FakeUserCollection();
+			UserId ada = users.Add(HordeFakes.User("Ada Lovelace", AdaEmail));
+			UserId grace = users.Add(HordeFakes.User("Grace Hopper", "grace@example.com"));
+
+			Harness harness = new Harness(users, Harness.Mapped((AdaEmail, AdaDiscordId)));
+
+			Assert.IsNull(await harness.Processor.GetDirectMessageLinkAsync([ada, grace], default),
+				"Slack supports up to eight people in a DM. Discord's group DMs need OAuth scopes a bot cannot have, "
+				+ "so there is no honest answer for more than one.");
+		}
+
+		[TestMethod]
+		public async Task ThereIsNoLinkForSomebodyUnmapped()
+		{
+			FakeUserCollection users = new FakeUserCollection();
+			UserId ada = users.Add(HordeFakes.User("Ada Lovelace", AdaEmail));
+
+			Harness harness = new Harness(users, Harness.Mapped());
+
+			Assert.IsNull(await harness.Processor.GetDirectMessageLinkAsync([ada], default));
+		}
+
+		#endregion
+
+		const string DmChannel = "300000000000000001";
+
+		static Harness Reachable() => new Harness(
+			config: Harness.Mapped((AdaEmail, AdaDiscordId)),
+			responses: RecordingHttpHandler.Json(HttpStatusCode.OK, $$"""{"id":"{{DmChannel}}"}"""));
+
+		static IReadOnlyList<DiscordDestination> Channel() => [new DiscordDestination(AgentChannel)];
+
+		static DiscordEmbedBuilder Embed() => new DiscordEmbedBuilder().WithTitle("Something happened");
 
 		static ConfigUpdateInfo Failed(Exception exception) => new ConfigUpdateInfo([], [], exception);
 
@@ -550,7 +842,7 @@ namespace HordeServer.Discord.Tests.Notifications
 		/// </summary>
 		sealed class Harness
 		{
-			public Harness(FakeUserCollection? users = null, DiscordConfig? channels = null, string? botToken = "token", string? agentChannel = AgentChannel)
+			public Harness(FakeUserCollection? users = null, DiscordConfig? config = null, string? botToken = "token", string? agentChannel = AgentChannel, string? slackToken = null, bool? enableDeepLinks = null, params HttpResponseMessage[] responses)
 			{
 				DiscordServerConfig serverConfig = new DiscordServerConfig
 				{
@@ -559,6 +851,7 @@ namespace HordeServer.Discord.Tests.Notifications
 					AgentNotificationChannel = agentChannel,
 					DeviceNotificationChannel = DeviceChannel,
 					UpdateStreamsNotificationChannel = UpdateStreamsChannel,
+					EnableDeepLinks = enableDeepLinks,
 
 					// Plain text, so an assertion on a message reads as the message rather than as an emoji shortcode.
 					ErrorPrefix = String.Empty,
@@ -566,14 +859,16 @@ namespace HordeServer.Discord.Tests.Notifications
 				};
 
 				IOptions<DiscordServerConfig> options = Options.Create(serverConfig);
+				IOptions<BuildServerConfig> buildServerConfig = Options.Create(new BuildServerConfig { SlackToken = slackToken });
+				StaticOptionsMonitor<DiscordConfig> pluginConfig = new StaticOptionsMonitor<DiscordConfig>(config ?? Mapped());
 
-				DiscordChannelResolver resolver = new DiscordChannelResolver(
-					new StaticOptionsMonitor<DiscordConfig>(channels ?? MappedChannels()),
+				DiscordChannelResolver channels = new DiscordChannelResolver(
+					pluginConfig,
 					options,
-					Options.Create(new BuildServerConfig()),
+					buildServerConfig,
 					NullLogger<DiscordChannelResolver>.Instance);
 
-				Handler = new RecordingHttpHandler();
+				Handler = new RecordingHttpHandler(responses);
 
 				DiscordClient client = new DiscordClient(
 					new HttpClient(Handler),
@@ -583,9 +878,11 @@ namespace HordeServer.Discord.Tests.Notifications
 
 				Processor = new DiscordNotificationProcessor(
 					client,
-					resolver,
+					channels,
+					new DiscordUserResolver(pluginConfig, NullLogger<DiscordUserResolver>.Instance),
 					new DiscordRepeatFilter(new FakeDiscordClock()),
 					options,
+					buildServerConfig,
 					new StaticOptionsMonitor<BuildConfig>(new BuildConfig()),
 					users ?? new FakeUserCollection(),
 					new FakeServerInfo(),
@@ -596,13 +893,27 @@ namespace HordeServer.Discord.Tests.Notifications
 
 			public DiscordNotificationProcessor Processor { get; }
 
-			static DiscordConfig MappedChannels()
+			/// <summary>
+			/// The channel map every test starts from, optionally with people in it.
+			/// </summary>
+			public static DiscordConfig Mapped(params (string Email, string DiscordId)[] users)
 			{
 				DiscordConfig config = new DiscordConfig
 				{
+					Guilds = { ["studio"] = GuildId },
 					Channels = { [WorkflowSlackId] = new DiscordChannelMapping { Label = "horde-triage", Channel = WorkflowChannel } },
 				};
 
+				foreach ((string email, string discordId) in users)
+				{
+					config.UserMap[email] = discordId;
+				}
+
+				return PostLoad(config);
+			}
+
+			public static DiscordConfig PostLoad(DiscordConfig config)
+			{
 				config.PostLoad(new PluginConfigOptions(ConfigVersion.Latest, [], new Acls.AclConfig(), NullLogger.Instance));
 				return config;
 			}

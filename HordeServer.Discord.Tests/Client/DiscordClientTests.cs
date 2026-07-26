@@ -141,6 +141,34 @@ namespace HordeServer.Discord.Tests.Client
 			Assert.IsNull(reference);
 		}
 
+		[TestMethod]
+		public async Task OpeningADirectMessageChannelNamesTheRecipient()
+		{
+			RecordingHttpHandler handler = new RecordingHttpHandler(Json(HttpStatusCode.OK, """{"id":"777"}"""));
+			DiscordClient client = Create(handler);
+
+			string? channelId = await client.GetDirectMessageChannelAsync("42", CancellationToken.None);
+
+			Assert.AreEqual("777", channelId);
+			Assert.AreEqual("https://discord.com/api/v10/users/@me/channels", handler.Requests[0].Uri);
+
+			using JsonDocument document = JsonDocument.Parse(handler.Requests[0].Body!);
+
+			Assert.AreEqual("42", document.RootElement.GetProperty("recipient_id").GetString(),
+				"Discord takes the user id under this exact name; anything else is a silent 400.");
+		}
+
+		[TestMethod]
+		public async Task ARefusedDirectMessageChannelIsReportedAsNull()
+		{
+			RecordingHttpHandler handler = new RecordingHttpHandler(
+				Json(HttpStatusCode.Forbidden, """{"message":"Cannot send messages to this user","code":50007}"""));
+
+			Assert.IsNull(await Create(handler).GetDirectMessageChannelAsync("42", CancellationToken.None),
+				"Sharing no guild with someone, or their having DMs turned off, is an ordinary state rather than an "
+				+ "error - the caller falls back to naming them in a channel.");
+		}
+
 		static DiscordClient Create(RecordingHttpHandler handler, string botToken = "token", IDiscordClock? clock = null)
 		{
 			DiscordServerConfig serverConfig = new DiscordServerConfig { BotToken = botToken };

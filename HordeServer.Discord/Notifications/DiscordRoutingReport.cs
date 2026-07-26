@@ -24,6 +24,7 @@ namespace HordeServer.Discord.Notifications
 	public sealed class DiscordRoutingReport : IHostedService, IDisposable
 	{
 		readonly DiscordChannelResolver _channels;
+		readonly DiscordUserResolver _users;
 		readonly IOptionsMonitor<BuildConfig> _buildConfig;
 		readonly IOptions<BuildServerConfig> _buildServerConfig;
 		readonly DiscordServerConfig _serverConfig;
@@ -34,14 +35,16 @@ namespace HordeServer.Discord.Notifications
 		/// <summary>
 		/// Constructor.
 		/// </summary>
-		/// <param name="channels">Resolver holding the map to check against.</param>
+		/// <param name="channels">Resolver holding the channel map to check against.</param>
+		/// <param name="users">Resolver holding the role map to check against.</param>
 		/// <param name="buildConfig">Build plugin global configuration, which holds the stream and workflow routing.</param>
 		/// <param name="buildServerConfig">Build plugin server configuration, which holds the base channels.</param>
 		/// <param name="serverConfig">Discord server configuration.</param>
 		/// <param name="logger">Logger to report gaps to.</param>
-		public DiscordRoutingReport(DiscordChannelResolver channels, IOptionsMonitor<BuildConfig> buildConfig, IOptions<BuildServerConfig> buildServerConfig, IOptions<DiscordServerConfig> serverConfig, ILogger<DiscordRoutingReport> logger)
+		public DiscordRoutingReport(DiscordChannelResolver channels, DiscordUserResolver users, IOptionsMonitor<BuildConfig> buildConfig, IOptions<BuildServerConfig> buildServerConfig, IOptions<DiscordServerConfig> serverConfig, ILogger<DiscordRoutingReport> logger)
 		{
 			_channels = channels;
+			_users = users;
 			_buildConfig = buildConfig;
 			_buildServerConfig = buildServerConfig;
 			_serverConfig = serverConfig.Value;
@@ -82,7 +85,22 @@ namespace HordeServer.Discord.Notifications
 		public void Report()
 		{
 			SortedDictionary<string, List<string>> unmapped = new SortedDictionary<string, List<string>>(StringComparer.Ordinal);
+			SortedDictionary<string, List<string>> unmappedAliases = new SortedDictionary<string, List<string>>(StringComparer.Ordinal);
 			int total = 0;
+			int totalAliases = 0;
+
+			void Record(SortedDictionary<string, List<string>> into, string key, string usedBy)
+			{
+				if (!into.TryGetValue(key, out List<string>? users))
+				{
+					into[key] = users = new List<string>();
+				}
+
+				if (users.Count < 5 && !users.Contains(usedBy))
+				{
+					users.Add(usedBy);
+				}
+			}
 
 			void Check(string? hordeChannel, string usedBy)
 			{
@@ -92,16 +110,23 @@ namespace HordeServer.Discord.Notifications
 
 					if (!_channels.IsMapped(channel))
 					{
-						if (!unmapped.TryGetValue(channel, out List<string>? users))
-						{
-							unmapped[channel] = users = new List<string>();
-						}
-
-						if (users.Count < 5 && !users.Contains(usedBy))
-						{
-							users.Add(usedBy);
-						}
+						Record(unmapped, channel, usedBy);
 					}
+				}
+			}
+
+			void CheckAlias(string? alias, string usedBy)
+			{
+				if (String.IsNullOrWhiteSpace(alias))
+				{
+					return;
+				}
+
+				totalAliases++;
+
+				if (!_users.IsRoleMapped(alias))
+				{
+					Record(unmappedAliases, alias, usedBy);
 				}
 			}
 
@@ -126,6 +151,14 @@ namespace HordeServer.Discord.Notifications
 				{
 					Check(workflow.ReportChannel, $"stream {stream.Id}, workflow {workflow.Id}: reportChannel");
 					Check(workflow.TriageChannel, $"stream {stream.Id}, workflow {workflow.Id}: triageChannel");
+
+					CheckAlias(workflow.TriageAlias, $"stream {stream.Id}, workflow {workflow.Id}: triageAlias");
+					CheckAlias(workflow.EscalateAlias, $"stream {stream.Id}, workflow {workflow.Id}: escalateAlias");
+
+					foreach ((string issueType, string alias) in workflow.TriageTypeAliases ?? [])
+					{
+						CheckAlias(alias, $"stream {stream.Id}, workflow {workflow.Id}: triageTypeAliases[{issueType}]");
+					}
 				}
 
 				foreach (TemplateRefConfig template in stream.Templates)
@@ -137,15 +170,31 @@ namespace HordeServer.Discord.Notifications
 			if (unmapped.Count == 0)
 			{
 				_logger.LogInformation("Discord channel routing: all {Total} Horde channel reference(s) are mapped.", total);
-				return;
+			}
+			else
+			{
+				_logger.LogWarning("Discord channel routing: {Unmapped} of {Total} Horde channel reference(s) have no "
+					+ "Discord mapping.", unmapped.Count, total);
+
+				foreach ((string channel, List<string> usedBy) in unmapped)
+				{
+					_logger.LogWarning("  unmapped Horde channel '{Channel}' - used by {UsedBy}", channel, String.Join("; ", usedBy));
+				}
 			}
 
-			_logger.LogWarning("Discord channel routing: {Unmapped} of {Total} Horde channel reference(s) have no "
-				+ "Discord mapping.", unmapped.Count, total);
-
-			foreach ((string channel, List<string> usedBy) in unmapped)
+			// Reported at information rather than warning, and only when there is something to say. Aliases are not
+			// used until issue triage lands, so a gap here is not yet costing anyone a notification - it is a heads-up
+			// that it will.
+			if (unmappedAliases.Count > 0)
 			{
-				_logger.LogWarning("  unmapped Horde channel '{Channel}' - used by {UsedBy}", channel, String.Join("; ", usedBy));
+				_logger.LogInformation("Discord role routing: {Unmapped} of {Total} Horde alias reference(s) have no "
+					+ "Discord role mapping. Issue triage will name them in plain text rather than pinging them.",
+					unmappedAliases.Count, totalAliases);
+
+				foreach ((string alias, List<string> usedBy) in unmappedAliases)
+				{
+					_logger.LogInformation("  unmapped Horde alias '{Alias}' - used by {UsedBy}", alias, String.Join("; ", usedBy));
+				}
 			}
 		}
 

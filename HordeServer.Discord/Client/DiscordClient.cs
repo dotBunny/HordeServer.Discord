@@ -1,5 +1,6 @@
 // Copyright (c) 2026 dotBunny Inc. See the LICENSE file in the project root for more information.
 
+using System.Collections.Concurrent;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Reflection;
@@ -45,6 +46,11 @@ namespace HordeServer.Discord.Client
 		readonly HttpClient _httpClient;
 		readonly DiscordRateLimiter _rateLimiter;
 		readonly ILogger _logger;
+
+		// Discord user snowflake to the DM channel opened with them. Opening is idempotent and the id never changes,
+		// so this is a pure saving: one request per person for the lifetime of the process instead of one per
+		// notification.
+		readonly ConcurrentDictionary<string, string> _directMessageChannels = new ConcurrentDictionary<string, string>(StringComparer.Ordinal);
 
 		HttpClient? _ownedHttpClient;
 
@@ -128,6 +134,63 @@ namespace HordeServer.Discord.Client
 			}
 
 			return await ReadMessageReferenceAsync(response, channelId, cancellationToken);
+		}
+
+		/// <summary>
+		/// Opens the direct message channel with a user, or returns the one already open.
+		/// </summary>
+		/// <remarks>
+		/// Discord has no "send a DM to this user" endpoint. A DM is an ordinary channel that happens to have two
+		/// members, so it has to be opened first and then posted to like any other. Opening is idempotent and returns
+		/// the same channel every time, which is what makes caching safe.
+		///
+		/// Returns null when the bot may not DM this person: it shares no guild with them, or they have direct
+		/// messages from server members turned off. That is a normal, permanent state for some users rather than an
+		/// error, so callers are expected to fall back to naming them in a channel. The failure is not cached - the
+		/// setting is theirs to change, and re-checking costs one request against a route nothing else uses.
+		/// </remarks>
+		/// <param name="userId">Discord user snowflake to open a channel with.</param>
+		/// <param name="cancellationToken">Cancellation token for the operation.</param>
+		/// <returns>The DM channel snowflake, or null if one could not be opened.</returns>
+		public async Task<string?> GetDirectMessageChannelAsync(string userId, CancellationToken cancellationToken)
+		{
+			if (_directMessageChannels.TryGetValue(userId, out string? cached))
+			{
+				return cached;
+			}
+
+			string payload = JsonSerializer.Serialize(new CreateDirectMessageChannel { RecipientId = userId }, s_jsonOptions);
+
+			using HttpResponseMessage response = await _rateLimiter.SendAsync(
+				DiscordRoute.CreateDirectMessageChannel(),
+				token => _httpClient.SendAsync(CreateRequest(HttpMethod.Post, "users/@me/channels", payload), token),
+				cancellationToken);
+
+			if (!await IsSuccessAsync(response, "open a direct message channel with user {UserId}", userId))
+			{
+				return null;
+			}
+
+			try
+			{
+				CreatedMessage? channel = await response.Content.ReadFromJsonAsync<CreatedMessage>(s_jsonOptions, cancellationToken);
+
+				if (channel?.Id == null)
+				{
+					_logger.LogError("Discord opened a direct message channel with user {UserId} but returned no channel id", userId);
+					return null;
+				}
+
+				// Bounded by the size of the configured user map, which is hand-maintained, so this cannot grow
+				// beyond the number of people someone has actually written down.
+				_directMessageChannels[userId] = channel.Id;
+				return channel.Id;
+			}
+			catch (JsonException ex)
+			{
+				_logger.LogError(ex, "Could not read the channel id Discord returned for user {UserId}", userId);
+				return null;
+			}
 		}
 
 		/// <summary>
@@ -222,6 +285,9 @@ namespace HordeServer.Discord.Client
 		/// <summary>
 		/// The parts of Discord's message object the client needs back.
 		/// </summary>
+		/// <remarks>
+		/// Also serves the channel object returned when a DM is opened, which carries its id under the same property.
+		/// </remarks>
 		sealed class CreatedMessage
 		{
 			[JsonPropertyName("id")]
@@ -229,6 +295,15 @@ namespace HordeServer.Discord.Client
 
 			[JsonPropertyName("channel_id")]
 			public string? ChannelId { get; set; }
+		}
+
+		/// <summary>
+		/// Request body for opening a direct message channel.
+		/// </summary>
+		sealed class CreateDirectMessageChannel
+		{
+			[JsonPropertyName("recipient_id")]
+			public string? RecipientId { get; set; }
 		}
 	}
 

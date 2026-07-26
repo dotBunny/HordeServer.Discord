@@ -66,10 +66,12 @@ namespace HordeServer.Discord.Notifications
 
 		readonly DiscordClient _client;
 		readonly DiscordChannelResolver _channels;
+		readonly IDiscordUserResolver _discordUsers;
 		readonly DiscordRepeatFilter _repeats;
 		readonly DiscordServerConfig _serverConfig;
+		readonly BuildServerConfig _buildServerConfig;
 		readonly IOptionsMonitor<BuildConfig> _buildConfig;
-		readonly IUserCollection _users;
+		readonly IUserCollection _hordeUsers;
 		readonly IServerInfo _serverInfo;
 		readonly ILogger _logger;
 
@@ -78,20 +80,24 @@ namespace HordeServer.Discord.Notifications
 		/// </summary>
 		/// <param name="client">Client used to post.</param>
 		/// <param name="channels">Works out where each notification goes.</param>
+		/// <param name="discordUsers">Works out which Discord account belongs to a Horde user.</param>
 		/// <param name="repeats">Suppresses re-announcing a condition that has not changed.</param>
 		/// <param name="serverConfig">Server configuration, for the bot token and emoji prefixes.</param>
+		/// <param name="buildServerConfig">Build plugin server configuration, to see whether Slack is also running.</param>
 		/// <param name="buildConfig">Build plugin global configuration, for per-stream notification channels.</param>
-		/// <param name="users">User lookup, for turning the user ids on a report into names.</param>
+		/// <param name="hordeUsers">Horde user lookup, for turning the user ids on a report into users.</param>
 		/// <param name="serverInfo">Server information, for dashboard links.</param>
 		/// <param name="logger">Logger for delivery problems.</param>
-		public DiscordNotificationProcessor(DiscordClient client, DiscordChannelResolver channels, DiscordRepeatFilter repeats, IOptions<DiscordServerConfig> serverConfig, IOptionsMonitor<BuildConfig> buildConfig, IUserCollection users, IServerInfo serverInfo, ILogger<DiscordNotificationProcessor> logger)
+		public DiscordNotificationProcessor(DiscordClient client, DiscordChannelResolver channels, IDiscordUserResolver discordUsers, DiscordRepeatFilter repeats, IOptions<DiscordServerConfig> serverConfig, IOptions<BuildServerConfig> buildServerConfig, IOptionsMonitor<BuildConfig> buildConfig, IUserCollection hordeUsers, IServerInfo serverInfo, ILogger<DiscordNotificationProcessor> logger)
 		{
 			_client = client;
 			_channels = channels;
+			_discordUsers = discordUsers;
 			_repeats = repeats;
 			_serverConfig = serverConfig.Value;
+			_buildServerConfig = buildServerConfig.Value;
 			_buildConfig = buildConfig;
-			_users = users;
+			_hordeUsers = hordeUsers;
 			_serverInfo = serverInfo;
 			_logger = logger;
 		}
@@ -112,13 +118,49 @@ namespace HordeServer.Discord.Notifications
 		#region Jobs
 
 		/// <summary>
-		/// Reports that a job finished.
+		/// Reports to a channel that a job finished.
 		/// </summary>
 		/// <param name="job">Job that finished.</param>
 		/// <param name="outcome">How it went.</param>
-		/// <param name="forUser">User the notification was aimed at, if it was aimed at anyone.</param>
 		/// <param name="cancellationToken">Cancellation token for the operation.</param>
-		public Task NotifyJobCompleteAsync(IJob job, LabelOutcome outcome, IUser? forUser, CancellationToken cancellationToken)
+		public Task NotifyJobCompleteAsync(IJob job, LabelOutcome outcome, CancellationToken cancellationToken)
+			// Routed by the job and its stream rather than the base category, which is what Horde itself does for
+			// completions - and the only path that honours a per-template or per-stream notification channel.
+			=> SendAsync(
+				_channels.ResolveJobCompletion(job, GetStreamConfig(job.StreamId), outcome),
+				BuildJobCompleteEmbed(job, outcome),
+				null,
+				cancellationToken);
+
+		/// <summary>
+		/// Tells one person that a job they subscribed to finished.
+		/// </summary>
+		/// <remarks>
+		/// A direct message, matching Slack - this is the *subscription* notification, and it is addressed to one
+		/// person rather than announced. Somebody who cannot be reached directly gets it in the job channel instead,
+		/// which is the whole reason the fallback exists: an unmapped user must cost a mention, never a notification.
+		///
+		/// The person who aborted the job is skipped. They already know, and Slack skips them too.
+		/// </remarks>
+		/// <param name="user">User to tell.</param>
+		/// <param name="job">Job that finished.</param>
+		/// <param name="outcome">How it went.</param>
+		/// <param name="cancellationToken">Cancellation token for the operation.</param>
+		public Task NotifyJobCompleteToUserAsync(IUser user, IJob job, LabelOutcome outcome, CancellationToken cancellationToken)
+		{
+			if (job.AbortedByUserId == user.Id)
+			{
+				return Task.CompletedTask;
+			}
+
+			return SendToUsersAsync(
+				Only(user),
+				_channels.ResolveCategory(DiscordChannelCategory.Job),
+				BuildJobCompleteEmbed(job, outcome),
+				cancellationToken);
+		}
+
+		DiscordEmbedBuilder BuildJobCompleteEmbed(IJob job, LabelOutcome outcome)
 		{
 			DiscordEmbedBuilder embed = new DiscordEmbedBuilder()
 				.WithTitle($"{Prefix(outcome)}{job.Name}")
@@ -129,55 +171,91 @@ namespace HordeServer.Discord.Notifications
 			AddJobContext(embed, job);
 			embed.AddField("Outcome", Describe(outcome), true);
 
-			// Routed by the job and its stream rather than the base category, which is what Horde itself does for
-			// completions - and the only path that honours a per-template or per-stream notification channel.
-			return SendAsync(
-				_channels.ResolveJobCompletion(job, GetStreamConfig(job.StreamId), outcome),
-				embed,
-				Only(forUser),
-				cancellationToken);
+			return embed;
 		}
 
 		/// <summary>
-		/// Reports that a job step finished.
+		/// Tells the people subscribed to a step that it finished.
 		/// </summary>
+		/// <remarks>
+		/// Direct messages, matching Slack: these are subscription notifications, and broadcasting one to a channel
+		/// per subscriber would make the job channel unusable on a busy stream. Anyone unreachable is named in the
+		/// job channel instead.
+		///
+		/// A step that timed out is reported to the job channel as well, whether or not anyone subscribed. **This is
+		/// a deliberate difference from Slack**, which checks for subscribers first and so never reports a timeout on
+		/// a step nobody was watching - an ordering accident rather than an intention, since its timeout branch does
+		/// not look at the subscriber list at all. A step hitting its time limit is a farm problem.
+		/// </remarks>
 		/// <param name="job">Job containing the step.</param>
 		/// <param name="step">Step that finished.</param>
 		/// <param name="node">Node the step ran.</param>
 		/// <param name="events">Log events produced by the step.</param>
-		/// <param name="usersToNotify">Users the notification was aimed at.</param>
+		/// <param name="usersToNotify">Users subscribed to the step.</param>
 		/// <param name="cancellationToken">Cancellation token for the operation.</param>
-		public Task NotifyJobStepCompleteAsync(IJob job, IJobStep step, INode node, IReadOnlyList<ILogEventData> events, IEnumerable<IUser>? usersToNotify, CancellationToken cancellationToken)
-			=> SendStepMessageAsync(job, step, node, events, usersToNotify, GetColor(step.Outcome), Prefix(step.Outcome), Describe(step.Outcome), cancellationToken);
+		public async Task NotifyJobStepCompleteAsync(IJob job, IJobStep step, INode node, IReadOnlyList<ILogEventData> events, IEnumerable<IUser>? usersToNotify, CancellationToken cancellationToken)
+		{
+			if (step.Error == JobStepError.TimedOut)
+			{
+				DiscordEmbedBuilder timedOut = BuildStepEmbed(job, step, node, events, FailureColor, _serverConfig.ErrorPrefix, "Timed out");
+
+				await SendAsync(_channels.ResolveCategory(DiscordChannelCategory.Job), timedOut, null, cancellationToken);
+			}
+
+			if (!HasAny(usersToNotify))
+			{
+				return;
+			}
+
+			await SendToUsersAsync(
+				usersToNotify,
+				_channels.ResolveCategory(DiscordChannelCategory.Job),
+				BuildStepEmbed(job, step, node, events, GetColor(step.Outcome), Prefix(step.Outcome), Describe(step.Outcome)),
+				cancellationToken);
+		}
 
 		/// <summary>
-		/// Reports that a job step was aborted.
+		/// Tells the people subscribed to a step that it was aborted.
 		/// </summary>
+		/// <remarks>
+		/// Slack implements this member as a no-op, so anything here is additive. It is worth sending because the
+		/// cancellation reason is the part people actually want and is easy to miss in the dashboard - but it stays
+		/// addressed to subscribers rather than broadcast, so the addition cannot become noise.
+		/// </remarks>
 		/// <param name="job">Job containing the step.</param>
 		/// <param name="step">Step that was aborted.</param>
 		/// <param name="node">Node the step was running.</param>
 		/// <param name="events">Log events produced before the abort.</param>
-		/// <param name="usersToNotify">Users the notification was aimed at.</param>
+		/// <param name="usersToNotify">Users subscribed to the step.</param>
 		/// <param name="cancellationToken">Cancellation token for the operation.</param>
 		public Task NotifyJobStepAbortedAsync(IJob job, IJobStep step, INode node, IReadOnlyList<ILogEventData> events, IEnumerable<IUser>? usersToNotify, CancellationToken cancellationToken)
 		{
-			// An abort is not a failure - somebody chose it - so it gets the neutral colour and says who, when Horde
-			// knows. The cancellation reason is the part people actually want and is easy to miss in the dashboard.
+			if (!HasAny(usersToNotify))
+			{
+				return Task.CompletedTask;
+			}
+
+			// An abort is not a failure - somebody chose it - so it gets the neutral colour and says why.
 			string reason = step.CancellationReason ?? job.CancellationReason ?? "Aborted";
 
-			return SendStepMessageAsync(job, step, node, events, usersToNotify, NeutralColor, _serverConfig.WarningPrefix, reason, cancellationToken);
+			return SendToUsersAsync(
+				usersToNotify,
+				_channels.ResolveCategory(DiscordChannelCategory.Job),
+				BuildStepEmbed(job, step, node, events, NeutralColor, _serverConfig.WarningPrefix, reason),
+				cancellationToken);
 		}
 
 		/// <summary>
-		/// Reports that a label finished.
+		/// Tells one person that a label they subscribed to finished.
 		/// </summary>
+		/// <remarks>A direct message, matching Slack, falling back to the job channel for an unreachable user.</remarks>
 		/// <param name="job">Job the label belongs to.</param>
 		/// <param name="label">Label that finished.</param>
 		/// <param name="outcome">How it went.</param>
 		/// <param name="stepData">Name, outcome and link for each step in the label.</param>
-		/// <param name="forUser">User the notification was aimed at.</param>
+		/// <param name="forUser">User to tell.</param>
 		/// <param name="cancellationToken">Cancellation token for the operation.</param>
-		public Task NotifyLabelCompleteAsync(IJob job, ILabel label, LabelOutcome outcome, IReadOnlyList<(string Name, JobStepOutcome Outcome, Uri Url)> stepData, IUser? forUser, CancellationToken cancellationToken)
+		public Task NotifyLabelCompleteAsync(IJob job, ILabel label, LabelOutcome outcome, IReadOnlyList<(string Name, JobStepOutcome Outcome, Uri Url)> stepData, IUser forUser, CancellationToken cancellationToken)
 		{
 			string name = label.DashboardName ?? label.UgsName ?? "Label";
 
@@ -199,7 +277,7 @@ namespace HordeServer.Discord.Notifications
 				embed.AddField($"Steps ({notable.Count})", Summarise(notable, x => $"{Prefix(x.Outcome).TrimEnd()} [{Escape(x.Name)}]({x.Url})".TrimStart()));
 			}
 
-			return SendToJobChannelsAsync(embed, Only(forUser), cancellationToken);
+			return SendToUsersAsync(Only(forUser), _channels.ResolveCategory(DiscordChannelCategory.Job), embed, cancellationToken);
 		}
 
 		/// <summary>
@@ -230,10 +308,10 @@ namespace HordeServer.Discord.Notifications
 					Summarise(jobs, x => $"[{Escape(x.JobName)}]({GetJobUrl(JobId.Parse(x.JobId))})"));
 			}
 
-			return SendToJobChannelsAsync(embed, null, cancellationToken);
+			return SendAsync(_channels.ResolveCategory(DiscordChannelCategory.Job), embed, null, cancellationToken);
 		}
 
-		Task SendStepMessageAsync(IJob job, IJobStep step, INode node, IReadOnlyList<ILogEventData> events, IEnumerable<IUser>? usersToNotify, int color, string prefix, string outcome, CancellationToken cancellationToken)
+		DiscordEmbedBuilder BuildStepEmbed(IJob job, IJobStep step, INode node, IReadOnlyList<ILogEventData> events, int color, string prefix, string outcome)
 		{
 			DiscordEmbedBuilder embed = new DiscordEmbedBuilder()
 				.WithTitle($"{prefix}{node.Name}")
@@ -247,7 +325,7 @@ namespace HordeServer.Discord.Notifications
 			AddDuration(embed, step);
 			AddLogEvents(embed, events);
 
-			return SendToJobChannelsAsync(embed, usersToNotify, cancellationToken);
+			return embed;
 		}
 
 		void AddJobContext(DiscordEmbedBuilder embed, IJob job)
@@ -288,9 +366,6 @@ namespace HordeServer.Discord.Notifications
 					MaxQuotedLogEvents,
 					"see the log for the rest"));
 		}
-
-		Task SendToJobChannelsAsync(DiscordEmbedBuilder embed, IEnumerable<IUser>? forUsers, CancellationToken cancellationToken)
-			=> SendAsync(_channels.ResolveCategory(DiscordChannelCategory.Job), embed, forUsers, cancellationToken);
 
 		#endregion
 
@@ -428,6 +503,10 @@ namespace HordeServer.Discord.Notifications
 		/// Distinct from <see cref="NotifyConfigUpdateAsync"/>: this one is raised per file by whatever was trying to
 		/// read it, arrives with the commit and author already worked out, and is not repeated on a ticker - so it is
 		/// posted every time rather than filtered.
+		///
+		/// Goes to the channel *and* to the author, which is the one place both are right. The channel is how the
+		/// team learns the configuration is stale; the direct message is how the person who broke it finds out
+		/// without watching a channel. Slack does the same.
 		/// </remarks>
 		/// <param name="errorMessage">What went wrong.</param>
 		/// <param name="fileName">File that could not be read.</param>
@@ -435,7 +514,7 @@ namespace HordeServer.Discord.Notifications
 		/// <param name="author">Author of that commit.</param>
 		/// <param name="description">Description of that commit.</param>
 		/// <param name="cancellationToken">Cancellation token for the operation.</param>
-		public Task NotifyConfigUpdateFailureAsync(string errorMessage, string fileName, int? change, IUser? author, string? description, CancellationToken cancellationToken)
+		public async Task NotifyConfigUpdateFailureAsync(string errorMessage, string fileName, int? change, IUser? author, string? description, CancellationToken cancellationToken)
 		{
 			DiscordEmbedBuilder embed = new DiscordEmbedBuilder()
 				.WithTitle($"{_serverConfig.ErrorPrefix}Stream configuration update failed")
@@ -457,11 +536,18 @@ namespace HordeServer.Discord.Notifications
 				}
 			}
 
-			return SendAsync(
+			await SendAsync(
 				_channels.ResolveCategory(DiscordChannelCategory.UpdateStreams),
 				embed,
 				Only(author),
 				cancellationToken);
+
+			// Best effort, and no fallback: the channel post above has already carried it, so an author who cannot be
+			// reached directly has lost nothing.
+			if (author != null)
+			{
+				await TrySendDirectAsync(author, embed.Build(), cancellationToken);
+			}
 		}
 
 		#endregion
@@ -472,11 +558,10 @@ namespace HordeServer.Discord.Notifications
 		/// Reports something the device service wants a person to know.
 		/// </summary>
 		/// <remarks>
-		/// **A departure from the Slack sink, deliberately.** Slack sends this as a direct message and sends nothing
-		/// at all when it cannot identify the user, which in practice means every one of these is a private reminder
-		/// about a device checkout. Discord cannot DM anyone until the Phase 3 user map exists, so this goes to the
-		/// device channel with the person named - the same interim the job members take. Phase 3 turns it back into a
-		/// DM, at which point the channel post becomes the fallback for an unmapped user rather than the norm.
+		/// A direct message, as Slack sends it - these are private reminders about a device checkout rather than
+		/// anything the team needs. Where Slack sends nothing at all if it cannot identify the user, this falls back
+		/// to the device channel naming them, so a gap in the user map costs a reminder its privacy rather than its
+		/// existence.
 		/// </remarks>
 		/// <param name="message">Message from the device service.</param>
 		/// <param name="device">Device it concerns.</param>
@@ -523,7 +608,7 @@ namespace HordeServer.Discord.Notifications
 				}
 			}
 
-			return SendAsync(_channels.ResolveCategory(DiscordChannelCategory.Device), embed, Only(user), cancellationToken);
+			return SendToUsersAsync(Only(user), _channels.ResolveCategory(DiscordChannelCategory.Device), embed, cancellationToken);
 		}
 
 		/// <summary>
@@ -883,25 +968,121 @@ namespace HordeServer.Discord.Notifications
 
 			foreach (string userId in userIds)
 			{
-				if (!UserId.TryParse(userId, out UserId parsed))
+				if (UserId.TryParse(userId, out UserId parsed) && await GetUserAsync(parsed, cancellationToken) is IUser user)
 				{
-					continue;
-				}
-
-				try
-				{
-					if (await _users.GetUserAsync(parsed, cancellationToken) is IUser user)
-					{
-						users.Add(user);
-					}
-				}
-				catch (Exception ex)
-				{
-					_logger.LogDebug(ex, "Could not look up Horde user {UserId} while addressing a Discord notification.", userId);
+					users.Add(user);
 				}
 			}
 
 			return users;
+		}
+
+		/// <summary>
+		/// Looks up a Horde user, treating every failure as "not found".
+		/// </summary>
+		/// <param name="userId">User to look up.</param>
+		/// <param name="cancellationToken">Cancellation token for the operation.</param>
+		/// <returns>The user, or null.</returns>
+		async Task<IUser?> GetUserAsync(UserId userId, CancellationToken cancellationToken)
+		{
+			try
+			{
+				return await _hordeUsers.GetUserAsync(userId, cancellationToken);
+			}
+			catch (Exception ex)
+			{
+				_logger.LogDebug(ex, "Could not look up Horde user {UserId} while addressing a Discord notification.", userId);
+				return null;
+			}
+		}
+
+		#endregion
+
+		#region Links
+
+		/// <summary>
+		/// Base of a Discord deep link. The client intercepts these; a browser follows them to the web app.
+		/// </summary>
+		const string ChannelLinkPrefix = "https://discord.com/channels";
+
+		/// <summary>
+		/// Whether this sink should answer the dashboard's requests for chat deep links.
+		/// </summary>
+		/// <remarks>
+		/// **Horde takes the first non-null answer from any sink and ignores the rest**
+		/// (<c>NotificationService.GetDirectMessageLinkAsync</c>), and sink order is registration order, which a
+		/// plugin does not control. Answering unconditionally would therefore be a coin toss over whether the
+		/// dashboard's "message these people" button opens Discord or Slack - and silently changing where an existing
+		/// Slack deployment's buttons go is exactly what a plugin that "runs alongside Slack" must not do.
+		///
+		/// So the default is to answer only when nobody else will: unset means links are provided when the Build
+		/// plugin has no Slack token configured. Setting it explicitly overrides that in either direction.
+		/// </remarks>
+		public bool ProvidesDeepLinks
+			=> _serverConfig.IsConfigured
+				&& (_serverConfig.EnableDeepLinks ?? String.IsNullOrEmpty(_buildServerConfig.SlackToken));
+
+		/// <summary>
+		/// Builds a link that opens a conversation with somebody.
+		/// </summary>
+		/// <remarks>
+		/// **One recipient only.** Slack supports up to eight in a multi-person DM; Discord's group DMs are limited
+		/// to user accounts and OAuth flows a bot has no access to, so there is no honest answer for more than one
+		/// person and null is better than a link to the wrong conversation.
+		/// </remarks>
+		/// <param name="userIds">Horde users to open a conversation with.</param>
+		/// <param name="cancellationToken">Cancellation token for the operation.</param>
+		/// <returns>A link, or null if one cannot be built.</returns>
+		public async Task<string?> GetDirectMessageLinkAsync(IReadOnlyList<UserId> userIds, CancellationToken cancellationToken)
+		{
+			if (!ProvidesDeepLinks || userIds.Count != 1)
+			{
+				return null;
+			}
+
+			IUser? user = await GetUserAsync(userIds[0], cancellationToken);
+
+			if (user == null)
+			{
+				return null;
+			}
+
+			string? discordUserId = await _discordUsers.GetUserIdAsync(user, cancellationToken);
+
+			if (discordUserId == null)
+			{
+				return null;
+			}
+
+			string? channelId = await _client.GetDirectMessageChannelAsync(discordUserId, cancellationToken);
+
+			// A DM is addressed as a channel under the pseudo-guild '@me'.
+			return channelId == null ? null : $"{ChannelLinkPrefix}/@me/{channelId}";
+		}
+
+		/// <summary>
+		/// Builds a link that opens one of Horde's channels in Discord.
+		/// </summary>
+		/// <remarks>
+		/// Only for a channel the map names explicitly. Sending someone to the catch-all channel would be a link that
+		/// works and is wrong, which is worse than no link at all - and a guild id is required, because Discord
+		/// addresses a channel by guild and channel together.
+		/// </remarks>
+		/// <param name="channel">Horde channel id, as a workflow or report carries it.</param>
+		/// <param name="cancellationToken">Cancellation token for the operation.</param>
+		/// <returns>A link, or null if the channel is not mapped.</returns>
+		public Task<string?> GetChannelLinkAsync(string channel, CancellationToken cancellationToken)
+		{
+			if (!ProvidesDeepLinks || !_channels.IsMapped(channel))
+			{
+				return Task.FromResult<string?>(null);
+			}
+
+			DiscordDestination? destination = _channels.Resolve(channel);
+
+			return Task.FromResult(destination?.GuildId == null
+				? null
+				: $"{ChannelLinkPrefix}/{destination.GuildId}/{destination.ChannelId}");
 		}
 
 		#endregion
@@ -926,14 +1107,7 @@ namespace HordeServer.Discord.Notifications
 				return;
 			}
 
-			// Named in plain text rather than mentioned. Until the Phase 3 user map exists there is no snowflake to
-			// mention with, and a notification that arrives addressed to nobody beats one that does not arrive.
-			IReadOnlyList<string> names = forUsers == null
-				? Array.Empty<string>()
-				: [.. forUsers.Select(x => x.Name).Where(x => !String.IsNullOrEmpty(x)).Distinct()];
-
-			string? addressee = names.Count > 0 ? $"For {String.Join(", ", names.Select(Escape))}" : null;
-
+			DiscordAddressee addressee = await DescribeAsync(forUsers, cancellationToken);
 			DiscordEmbed built = embed.Build();
 
 			foreach (DiscordDestination destination in destinations)
@@ -946,11 +1120,18 @@ namespace HordeServer.Discord.Notifications
 					? $"Unmapped Horde channel {Code(destination.SourceChannel)}"
 					: null;
 
-				string content = String.Join(" · ", new[] { addressee, note }.Where(x => x != null));
+				string content = String.Join(" · ", new[] { addressee.Text, note }.Where(x => x != null));
 
 				if (content.Length > 0)
 				{
 					message.WithContent(content);
+				}
+
+				// Only the people this notification is actually about may be pinged. Everything else - a step name, a
+				// commit description, an error line - is reproduced from somewhere else and must stay inert.
+				if (addressee.MentionedUserIds.Count > 0)
+				{
+					message.WithAllowedMentions(DiscordAllowedMentions.ForUsers(addressee.MentionedUserIds));
 				}
 
 				await _client.CreateMessageAsync(destination.ChannelId, message.Build(), cancellationToken);
@@ -962,12 +1143,153 @@ namespace HordeServer.Discord.Notifications
 		/// </summary>
 		/// <param name="destination">Where to post. Nothing is sent when this is null.</param>
 		/// <param name="embed">What to post.</param>
-		/// <param name="forUsers">Users the notification was aimed at, named in plain text.</param>
+		/// <param name="forUsers">Users the notification is about, mentioned where they are known.</param>
 		/// <param name="cancellationToken">Cancellation token for the operation.</param>
 		public Task SendToAsync(DiscordDestination? destination, DiscordEmbedBuilder embed, IEnumerable<IUser>? forUsers, CancellationToken cancellationToken)
 			=> destination == null
 				? Task.CompletedTask
 				: SendAsync(new[] { destination }, embed, forUsers, cancellationToken);
+
+		/// <summary>
+		/// Sends a notification to each person it is addressed to, falling back to a channel for anyone unreachable.
+		/// </summary>
+		/// <remarks>
+		/// The delivery rule for everything aimed at a person rather than at a team. A direct message is the right
+		/// shape for a subscription - it is about one person's build, and putting it in a shared channel per
+		/// subscriber is what makes a job channel unusable - but a Discord bot cannot DM everyone. It needs the user
+		/// in the map, it needs to share a guild with them, and they have to accept messages from server members.
+		///
+		/// So a miss degrades rather than disappearing: everyone who could not be reached is named once in the
+		/// fallback channel, mentioned if they are mapped and in plain text if not. **A notification is never
+		/// dropped for want of a mapping**, which is what makes the map safe to fill in gradually.
+		///
+		/// With nobody to address, this posts to the fallback - the sensible reading for a notification that came
+		/// with no user at all. Callers that should stay silent in that case check first.
+		/// </remarks>
+		/// <param name="users">People the notification is for.</param>
+		/// <param name="fallback">Where to post for anyone who could not be reached.</param>
+		/// <param name="embed">What to send.</param>
+		/// <param name="cancellationToken">Cancellation token for the operation.</param>
+		public async Task SendToUsersAsync(IEnumerable<IUser>? users, IReadOnlyList<DiscordDestination> fallback, DiscordEmbedBuilder embed, CancellationToken cancellationToken)
+		{
+			if (!_serverConfig.IsConfigured)
+			{
+				return;
+			}
+
+			IReadOnlyList<IUser> recipients = Distinct(users);
+
+			if (recipients.Count == 0)
+			{
+				await SendAsync(fallback, embed, null, cancellationToken);
+				return;
+			}
+
+			DiscordEmbed built = embed.Build();
+			List<IUser> unreachable = new List<IUser>();
+
+			foreach (IUser user in recipients)
+			{
+				if (!await TrySendDirectAsync(user, built, cancellationToken))
+				{
+					unreachable.Add(user);
+				}
+			}
+
+			if (unreachable.Count > 0)
+			{
+				await SendAsync(fallback, embed, unreachable, cancellationToken);
+			}
+		}
+
+		/// <summary>
+		/// Tries to send an embed to somebody as a direct message.
+		/// </summary>
+		/// <remarks>
+		/// Reports failure rather than throwing, because every reason this fails is a normal state of the world:
+		/// nobody has mapped this person yet, the bot shares no guild with them, or they do not accept direct
+		/// messages. The caller decides what to do instead.
+		/// </remarks>
+		/// <param name="user">Person to message.</param>
+		/// <param name="embed">What to send.</param>
+		/// <param name="cancellationToken">Cancellation token for the operation.</param>
+		/// <returns>True if the message was delivered.</returns>
+		public async Task<bool> TrySendDirectAsync(IUser user, DiscordEmbed embed, CancellationToken cancellationToken)
+		{
+			if (!_serverConfig.IsConfigured)
+			{
+				return false;
+			}
+
+			string? userId = await _discordUsers.GetUserIdAsync(user, cancellationToken);
+
+			if (userId == null)
+			{
+				return false;
+			}
+
+			string? channelId = await _client.GetDirectMessageChannelAsync(userId, cancellationToken);
+
+			if (channelId == null)
+			{
+				return false;
+			}
+
+			DiscordMessage message = new DiscordMessageBuilder().AddEmbed(embed).Build();
+
+			return await _client.CreateMessageAsync(channelId, message, cancellationToken) != null;
+		}
+
+		/// <summary>
+		/// Works out how to address a set of people in a channel message.
+		/// </summary>
+		/// <remarks>
+		/// Mentioned where the map knows them, named in plain text where it does not. The plain-text half is not a
+		/// placeholder for something better - it is what keeps a half-filled map from costing anyone a notification.
+		/// </remarks>
+		/// <param name="users">People the notification is about.</param>
+		/// <param name="cancellationToken">Cancellation token for the operation.</param>
+		/// <returns>The addressee line, and the ids that may be pinged.</returns>
+		async Task<DiscordAddressee> DescribeAsync(IEnumerable<IUser>? users, CancellationToken cancellationToken)
+		{
+			IReadOnlyList<IUser> recipients = Distinct(users);
+
+			if (recipients.Count == 0)
+			{
+				return DiscordAddressee.None;
+			}
+
+			List<string> parts = new List<string>();
+			List<string> mentioned = new List<string>();
+
+			foreach (IUser user in recipients)
+			{
+				string? userId = await _discordUsers.GetUserIdAsync(user, cancellationToken);
+
+				if (userId == null)
+				{
+					parts.Add(Escape(user.Name));
+				}
+				else
+				{
+					parts.Add($"<@{userId}>");
+					mentioned.Add(userId);
+				}
+			}
+
+			return new DiscordAddressee($"For {String.Join(", ", parts)}", mentioned);
+		}
+
+		/// <summary>
+		/// How a message names the people it is for.
+		/// </summary>
+		/// <param name="Text">Line to put above the embed, or null when it is addressed to nobody.</param>
+		/// <param name="MentionedUserIds">Ids allowed to be pinged, which must be listed explicitly.</param>
+		sealed record DiscordAddressee(string? Text, IReadOnlyList<string> MentionedUserIds)
+		{
+			/// <summary>Addressed to nobody.</summary>
+			public static DiscordAddressee None { get; } = new DiscordAddressee(null, Array.Empty<string>());
+		}
 
 		#endregion
 
@@ -1047,6 +1369,20 @@ namespace HordeServer.Discord.Notifications
 		}
 
 		static IEnumerable<IUser>? Only(IUser? user) => user == null ? null : new[] { user };
+
+		static bool HasAny(IEnumerable<IUser>? users) => users != null && users.Any();
+
+		/// <summary>
+		/// Removes repeats from a set of recipients.
+		/// </summary>
+		/// <remarks>
+		/// Horde can name the same person twice - subscribed to a step and its label, say - and a duplicate here
+		/// costs them two identical direct messages rather than one.
+		/// </remarks>
+		/// <param name="users">Recipients, possibly with repeats or nulls.</param>
+		/// <returns>Each distinct recipient once.</returns>
+		static IReadOnlyList<IUser> Distinct(IEnumerable<IUser>? users)
+			=> users == null ? Array.Empty<IUser>() : [.. users.Where(x => x != null).DistinctBy(x => x.Id)];
 
 		Uri GetJobUrl(JobId jobId) => new Uri(_serverInfo.DashboardUrl, $"job/{jobId}");
 

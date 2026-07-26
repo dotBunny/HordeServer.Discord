@@ -1,9 +1,10 @@
 # Horde → Discord Notification Plugin — Investigation & Plan
 
-> **Status:** Phases 0, 1 and 2 built (2026-07-25). Every broadcast member of `INotificationSink` now
-> delivers; issues, interactivity and user targeting remain. Nothing has been sent to a real Discord
-> server yet — no application, bot token or guild exists — so message formatting is unverified. Next
-> action is Phase 3 (§5), or standing up a Discord application to verify what exists end to end.
+> **Status:** Phases 0–3 built (2026-07-25). Fifteen of the seventeen `INotificationSink` members
+> deliver; only the two issue members remain, and they are Phase 4 along with the gateway. Nothing has
+> been sent to a real Discord server yet — no application, bot token or guild exists — so message
+> formatting, DM delivery and mention rendering are all unverified. Next action is standing up a
+> Discord application, which Phase 4 needs anyway.
 > **Written:** 2026-07-25, against the DETHOL source engine (UE 5.8).
 > All line references below point into `Engine/Source/Programs/Horde` in that engine — re-verify them
 > after an engine upgrade, since none of it is a stable public API.
@@ -456,6 +457,8 @@ HordeServer.Discord/                         (this repo)
 │  │  │                                      grouped in regions matching the sink's own grouping
 │  │  ├─ DiscordRepeatFilter.cs           ✅ what has already been said, so a condition that persists
 │  │  │                                      is announced once and its recovery pairs with it
+│  │  ├─ DiscordUserResolver.cs           ✅ IDiscordUserResolver over the config user and role maps,
+│  │  │                                      warn-once on unmapped users. Not cached - see Phase 3
 │  │  ├─ DiscordChannelResolver.cs        ✅ Slack channel id -> Discord guild+channel (§3.3.2),
 │  │  │                                      with the catch-all fallback and warn-once
 │  │  ├─ DiscordChannelIds.cs             ✅ tells Slack ids and Discord snowflakes apart, which is
@@ -464,12 +467,10 @@ HordeServer.Discord/                         (this repo)
 │  │  │                                      each config reload
 │  │  ├─ DiscordMessageStateCollection.cs ▫️ Mongo "DiscordV1", unique (Recipient, EventId),
 │  │  │                                      also stores thread ids (§3.3.6). Deferred to Phase 4,
-│  │  │                                      where the first consumer is - see Phase 1 below
-│  │  └─ DiscordUserResolver.cs           ▫️ IDiscordUserResolver over the config map, MemoryCache,
-│  │                                         warn-once on unmapped users
+│  │                                         where the first consumer is - see Phase 1 below
 │  └─ Client/                                the hand-rolled client (mirrors EpicGames.Slack)
-│     ├─ DiscordClient.cs                 ✅ REST: create/edit message. Threads, DM channels and
-│     │                                      members arrive with the phases that need them
+│     ├─ DiscordClient.cs                 ✅ REST: create/edit message, open a DM channel (cached).
+│     │                                      Threads and members arrive with Phase 4
 │     ├─ DiscordRateLimiter.cs            ✅ per-route buckets + global, over an IDiscordClock seam
 │     ├─ DiscordEmbed*.cs / Message*.cs   ✅ builders, with every limit in §3.3.3 enforced
 │     ├─ DiscordMarkdown.cs               ✅ escaping for text that came from a build log
@@ -529,6 +530,9 @@ user map, so onboarding someone or re-pointing a stream doesn't need a server re
 {
   "userMap": {
     "someone@dotbunny.com": "1234567890"    // email → Discord snowflake
+  },
+  "roles": {                                // Horde alias → Discord role, for triage pings (Phase 4)
+    "S0123456789": "7766…"
   },
   "guilds": { "studio": "112233445566778899" },
   "channels": {                             // Slack channel id → Discord destination (§3.3.2)
@@ -682,7 +686,7 @@ end-to-end tests that assert on the JSON that would reach Discord, which is the 
 interesting failures show up — a code fence severed by the 1024-character field limit, an embed over
 the combined ceiling, a link built into a field name where Discord renders it as source.
 
-### Phase 3 — Users, mentions, DMs
+### Phase 3 — Users, mentions, DMs ✅ **CODE COMPLETE, UNVERIFIED AGAINST DISCORD**
 `IDiscordUserResolver` over the hot-reloadable config map, with `MemoryCache` and warn-once on
 unmapped users. DM channel creation (`POST /users/@me/channels`), @-mention rendering, per-user
 `NotifyJobCompleteAsync(IUser, …)`, `GetDirectMessageLinkAsync` / `GetChannelLinkAsync`.
@@ -691,7 +695,61 @@ Also a `roles` table alongside `channels`: Slack's `TriageAlias`, `EscalateAlias
 `TriageTypeAliases` are user-group handles, and the Discord equivalent is a role mention
 `<@&roleId>`. Same translation-table shape, same reasoning as §3.3.2.
 
-> **Per-stream routing has left this phase.** §3.3.2 delivered it in Phase 1 as a side effect: Horde
+Built 2026-07-25.
+
+**The largest thing in this phase was a correction to Phase 1, not new work.** Reading the Slack sink
+member by member for the first time with DMs available showed that four of the job/step members had
+been given the wrong shape:
+
+| Member | Slack | Phase 1 shipped | Phase 3 |
+|---|---|---|---|
+| `NotifyJobCompleteAsync(IJob, …)` | channel | channel ✅ | unchanged |
+| `NotifyJobCompleteAsync(IUser, …)` | DM only, skipping `job.AbortedByUserId` | job channel, "For X" | DM, channel fallback, aborter skipped |
+| `NotifyJobStepCompleteAsync` | DM per subscriber; channel only on `TimedOut` | job channel | DM per subscriber; channel on `TimedOut` |
+| `NotifyJobStepAbortedAsync` | **no-op** | job channel | DM per subscriber, nothing without one |
+| `NotifyLabelCompleteAsync(IUser, …)` | DM only | job channel | DM, channel fallback |
+
+These are *subscription* notifications, one per subscriber per step. Broadcasting them to a shared job
+channel — which is what Phase 1 did as its "the information still arrives" interim — would have made
+the job channel unusable on a busy stream. The interim was right for Phase 1 and wrong to keep.
+
+One deliberate difference from Slack survives: a step that hits its time limit is reported to the job
+channel **whether or not anyone subscribed**. Slack checks for subscribers and returns before reaching
+its timeout branch, which reads as an ordering accident — that branch does not look at the subscriber
+list at all — and a step hitting its time limit is a farm problem rather than a subscriber's.
+
+Other decisions:
+
+- **The user map is not cached, reversing the sketch above.** Caching made sense while this was
+  imagined as an API lookup like Slack's `users.lookupByEmail`. Over a dictionary in the hot-reloadable
+  config it buys nothing and costs the hot reload the map lives there to get — adding somebody should
+  start mentioning them, not start a cache expiry countdown. The *DM channel id* is cached instead,
+  because that one is a round trip; opening a DM is idempotent and returns the same channel forever.
+- **Deep links default to answering only when nobody else will.**
+  `NotificationService.GetDirectMessageLinkAsync` takes the **first non-null answer from any sink and
+  ignores the rest**, and sink order is registration order, which a plugin does not control. A sink
+  that always answered would decide by luck whether an existing Slack deployment's dashboard buttons
+  still opened Slack — precisely the "runs alongside Slack, unchanged" promise in §2. So
+  `DiscordServerConfig.EnableDeepLinks` is a `bool?`: unset means provide links only when the Build
+  plugin has no `SlackToken`, and setting it overrides in either direction.
+- **A DM link is one recipient only.** Slack supports up to eight in a multi-person DM. Discord's group
+  DMs need OAuth scopes a bot cannot have, so more than one person gets null rather than a link to the
+  wrong conversation.
+- **Nothing is ever dropped for want of a mapping.** An unmapped user, a bot sharing no guild with
+  them, or DMs turned off all degrade the same way: the notification goes to the fallback channel with
+  them mentioned if known and named in plain text if not. The fallback triggers on a failed *send* as
+  well as a failed channel open, because Discord will open a DM channel and then refuse the message.
+- **The `roles` table is configurable but nothing pings a role yet** — its consumer is issue triage in
+  Phase 4. It earns its place now because `DiscordRoutingReport` walks every workflow's `triageAlias`,
+  `escalateAlias` and `triageTypeAliases` and names the gaps at startup, so the map can be filled in
+  before it is urgent rather than during an outage.
+
+**164 tests**, up from 131. The job and step members remain untested end to end: `IJob` has 61 members
+and `IJobStep` 38, so a stand-in is a disproportionate amount of boilerplate. The routing they now
+depend on — `SendToUsersAsync`, `TrySendDirectAsync` and mention rendering — is public on the processor
+and tested directly, which leaves those members as thin wrappers over covered code.
+
+> **Per-stream routing left this phase in Phase 1.** §3.3.2 delivered it as a side effect: Horde
 > resolves the stream's, workflow's or template's channel itself, and the plugin translates the result.
 
 > A bot can only DM users who share a guild with it. Unmapped or un-DMable users must fall back to a

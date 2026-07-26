@@ -34,6 +34,21 @@ namespace HordeServer
 		public Dictionary<string, string> UserMap { get; set; } = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
 		/// <summary>
+		/// Map of the user-group handle Horde pings to the Discord role that stands in for it.
+		/// </summary>
+		/// <remarks>
+		/// Horde's workflows name a Slack alias to ping when nobody is assigned to an issue - <c>triageAlias</c>,
+		/// <c>escalateAlias</c> and the per-issue-type <c>triageTypeAliases</c>. Slack renders those as a user-group
+		/// mention; the Discord equivalent is a role mention, so this is the same translation the <see cref="Channels"/>
+		/// map performs, on the other axis. Keys are whatever Horde carries, values are Discord role snowflakes.
+		///
+		/// Nothing pings a role until issue triage lands in Phase 4. It is configurable now because
+		/// <c>DiscordRoutingReport</c> names the gaps at startup, and filling the map in is the sort of thing that
+		/// wants doing before it is urgent rather than during an outage.
+		/// </remarks>
+		public Dictionary<string, string> Roles { get; set; } = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+		/// <summary>
 		/// Named Discord guilds, mapping a short name to a guild snowflake.
 		/// </summary>
 		/// <remarks>
@@ -85,6 +100,20 @@ namespace HordeServer
 		[JsonIgnore]
 		public IReadOnlyDictionary<string, DiscordDestination> ResolvedChannels { get; private set; }
 			= new Dictionary<string, DiscordDestination>(StringComparer.OrdinalIgnoreCase);
+
+		/// <summary>
+		/// User mappings after validation, keyed by email address.
+		/// </summary>
+		[JsonIgnore]
+		public IReadOnlyDictionary<string, string> ResolvedUsers { get; private set; }
+			= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+		/// <summary>
+		/// Role mappings after validation, keyed by the handle Horde carries.
+		/// </summary>
+		[JsonIgnore]
+		public IReadOnlyDictionary<string, string> ResolvedRoles { get; private set; }
+			= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
 		/// <summary>
 		/// The catch-all destination, if one is configured and valid.
@@ -153,7 +182,57 @@ namespace HordeServer
 			ResolvedChannels = resolved;
 			ResolvedDefaultGuildId = defaultGuildId;
 			ResolvedFallback = BuildFallback(defaultGuildId, guilds, logger);
+			ResolvedUsers = ResolveSnowflakes(UserMap, "user", logger, IsProbablyEmail);
+			ResolvedRoles = ResolveSnowflakes(Roles, "role", logger, null);
 		}
+
+		/// <summary>
+		/// Keeps the entries of a map whose values are usable Discord snowflakes.
+		/// </summary>
+		/// <remarks>
+		/// A bad entry is dropped and named rather than kept, so that the resolver's "no mapping for this person"
+		/// path - which degrades to a plain-text name - is the only way an entry can fail to work. Half-valid state
+		/// that produces a mention nobody receives would be much harder to spot.
+		/// </remarks>
+		/// <param name="map">Configured map.</param>
+		/// <param name="what">What the map holds, for diagnostics.</param>
+		/// <param name="logger">Logger to report problems to.</param>
+		/// <param name="checkKey">Optional check on the key, reported as a warning without dropping the entry.</param>
+		/// <returns>The entries that resolved.</returns>
+		static IReadOnlyDictionary<string, string> ResolveSnowflakes(Dictionary<string, string> map, string what, ILogger? logger, Func<string, bool>? checkKey)
+		{
+			Dictionary<string, string> resolved = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+			foreach ((string key, string value) in map)
+			{
+				if (!DiscordChannelIds.IsDiscordSnowflake(value))
+				{
+					logger?.LogError("Discord {What} mapping for '{Key}' is set to '{Value}', which is not a Discord id.", what, key, value);
+					continue;
+				}
+
+				if (checkKey != null && !checkKey(key))
+				{
+					logger?.LogWarning("Discord {What} mapping key '{Key}' does not look like an email address; Horde "
+						+ "matches these against the address on the user's Horde account.", what, key);
+				}
+
+				resolved[key] = value;
+			}
+
+			return resolved;
+		}
+
+		/// <summary>
+		/// Whether a user map key looks like the thing Horde will match it against.
+		/// </summary>
+		/// <remarks>
+		/// Deliberately shallow. The only mistake worth catching is a name or a Horde user id put where an email
+		/// belongs, and anything stricter would start rejecting addresses that are perfectly valid.
+		/// </remarks>
+		/// <param name="key">Configured key.</param>
+		/// <returns>True if it could be an email address.</returns>
+		static bool IsProbablyEmail(string key) => key.Contains('@', StringComparison.Ordinal);
 
 		DiscordDestination? BuildFallback(string? defaultGuildId, Dictionary<string, string> guilds, ILogger? logger)
 		{

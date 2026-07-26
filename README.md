@@ -10,10 +10,9 @@ It runs **alongside** Horde's built-in Slack support rather than replacing it, s
 gradually or run both indefinitely.
 
 > [!WARNING]
-> **Early development.** Everything Horde broadcasts is delivered: job and step outcomes,
-> configuration update failures, agent and device reports, and test health. Build health **issues** and
-> the interactive triage that goes with them are not implemented yet, and neither are direct messages
-> or @-mentions — a notification aimed at a person is posted to the channel naming them instead.
+> **Early development.** Job and step outcomes, configuration update failures, agent and device
+> reports and test health are all delivered, to channels or as direct messages as appropriate. Build
+> health **issues** and the interactive triage that goes with them are not implemented yet.
 >
 > Nothing has been verified against a real Discord server: no message this plugin produces has ever
 > actually been delivered. Treat the formatting as unproven and point it at a test channel first.
@@ -125,13 +124,15 @@ The plugin is **disabled by default** and does nothing until `Enabled` is `true`
 
 | Notification | Channel it uses |
 |---|---|
-| Job completed, step completed or aborted, label completed | The job's or stream's `notificationChannel`, honouring its outcome filter |
+| A job you subscribed to completed; a step completed or was aborted; a label completed | **A direct message** to each subscriber |
+| A job completed (the stream-wide announcement) | The job's or stream's `notificationChannel`, honouring its outcome filter |
+| A step timed out | `jobNotificationChannel` |
 | Jobs waiting to be scheduled | `jobNotificationChannel` |
 | Configuration update failed, and its recovery | `configNotificationChannel` |
-| Stream configuration update failed | `updateStreamsNotificationChannel` |
+| Stream configuration update failed | `updateStreamsNotificationChannel`, **and a direct message** to the commit's author |
 | Agents stuck conforming or upgrading; session conflicts | `agentNotificationChannel` |
 | Device pool health and device problems | The channel on the report (a workflow's `reportChannel`) |
-| Device checkout notices | `deviceNotificationChannel` |
+| Device checkout notices | **A direct message**, falling back to `deviceNotificationChannel` |
 | Test health degraded, and its recovery | The workflow's `reportChannel` |
 | Build health issues and triage | *Not implemented — Slack only for now* |
 
@@ -141,9 +142,11 @@ Two behaviours are worth knowing before you wonder whether something is broken:
   timer and reports the same failure each time. The plugin posts a failure when it first appears or
   when it changes, and posts "configuration update succeeded" only as the recovery from a failure it
   announced — never as routine chatter. The same applies to test health.
-- **Notifications aimed at a person go to a channel, addressed to them by name.** Slack sends some of
-  these as direct messages. Discord cannot look a user up by email, so until the user map lands the
-  message is posted where everyone can see it rather than not sent at all.
+- **A person the plugin cannot reach still gets their notification.** Direct messages need the person
+  in the user map below, need the bot to share a server with them, and need them to accept messages
+  from server members. If any of that is missing the notification goes to the fallback channel
+  instead, mentioning them if they are mapped and naming them if not. Nothing is dropped for want of
+  a mapping, so the map is safe to fill in gradually.
 
 ## Configuration
 
@@ -183,6 +186,32 @@ Add a workflow, or re-point one, and Discord follows automatically — as long a
 map. **At startup and on every config reload the plugin lists every Horde channel with no mapping**, so
 you don't have to discover a gap by noticing a notification that never arrived.
 
+### People
+
+Discord has no way to look someone up by email address, and an email address is all Horde knows about
+a person that Discord might share. So the association has to be written down:
+
+```jsonc
+{
+  "userMap": {
+    "ada@example.com": "200000000000000001"
+  },
+  "roles": {
+    "S0123456789": "400000000000000001"
+  }
+}
+```
+
+- **`userMap`** keys are the email address on the person's Horde account, and values are their Discord
+  user id. Right-click someone in Discord with Developer Mode on and choose **Copy User ID**.
+  Somebody who is not listed still gets their notifications — they are named in plain text in a
+  channel rather than mentioned or messaged directly. This lives in the hot-reloadable config on
+  purpose: adding a new hire should not need a server restart.
+- **`roles`** maps the Slack user-group handle Horde pings — a workflow's `triageAlias`,
+  `escalateAlias` or `triageTypeAliases` — to the Discord role that stands in for it. Nothing uses
+  this until issue triage is implemented; it is configurable now so the startup report can tell you
+  which aliases have no role behind them.
+
 ### Server settings
 
 All under `Horde:Plugins:Discord` in `server.json`. Changing any of them requires a server restart.
@@ -194,6 +223,7 @@ All under `Horde:Plugins:Discord` in `server.json`. Changing any of them require
 | `ApplicationId` | string | Your Discord application (client) id. Needed for slash commands and interactive components. |
 | `GuildId` | string | The Discord server the bot operates in. Only used for member lookup and command registration — posting uses channel ids directly. |
 | `EnableInteractions` | bool | Whether to connect to Discord's gateway for buttons and modals. Posting works without it. Defaults to `true`. |
+| `EnableDeepLinks` | bool | Whether the dashboard's "message these people" buttons should open Discord. Leave unset — see below. |
 | `JobNotificationChannel` | string | **Override.** Discord channel for job and step outcomes, `;`-separated, bypassing the routing map above. Normally unset. |
 | `AgentNotificationChannel` | string | Override for agent and session conflict reports. |
 | `ConfigNotificationChannel` | string | Override for configuration update failures. |
@@ -201,6 +231,19 @@ All under `Horde:Plugins:Discord` in `server.json`. Changing any of them require
 | `DeviceNotificationChannel` | string | Override for device service notices. Device *reports* carry their own channel and are routed through the map above. |
 | `ErrorPrefix` | string | Emoji prefixed to error messages. Defaults to `:red_circle:`. |
 | `WarningPrefix` | string | Emoji prefixed to warning messages. Defaults to `:warning:`. |
+
+### Dashboard deep links
+
+Horde's dashboard has buttons that open a chat conversation with a set of people, or a channel. It
+asks every notification plugin for a link and uses **the first answer it gets**, in an order nothing
+controls — so a Discord plugin that always answered could quietly take those buttons away from Slack.
+
+`EnableDeepLinks` therefore defaults to *automatic*: Discord answers only when the Build plugin has no
+`SlackToken` configured, which is exactly when nothing else would. Set it to `true` to point the
+dashboard at Discord even alongside Slack, or `false` to stay out of it.
+
+Note that a "message these people" link only works for a single person. Discord's group conversations
+are not something a bot can create.
 
 ### Finding channel ids
 
@@ -226,7 +269,9 @@ Horde__Plugins__Discord__BotToken=your-bot-token
 2. Under **Bot**, create a bot and copy its token.
 3. Invite it to your Discord server with permission to view and send messages in the target channels.
 
-No privileged intents are required.
+No privileged intents are required. The bot can only send someone a direct message if it shares a
+server with them and they accept messages from server members, which is why an unreachable person
+falls back to a channel.
 
 ## Verifying the installation
 

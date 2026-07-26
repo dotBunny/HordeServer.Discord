@@ -74,12 +74,12 @@ namespace HordeServer.Discord.Notifications
 
 		/// <inheritdoc/>
 		public Task NotifyJobCompleteAsync(IJob job, IGraph graph, LabelOutcome outcome, CancellationToken cancellationToken)
-			=> _processor.NotifyJobCompleteAsync(job, outcome, null, cancellationToken);
+			=> _processor.NotifyJobCompleteAsync(job, outcome, cancellationToken);
 
 		/// <inheritdoc/>
-		/// <remarks>Posted to the job channel naming the user until Phase 3 can DM them.</remarks>
+		/// <remarks>Sent as a direct message, falling back to the job channel if the user cannot be reached.</remarks>
 		public Task NotifyJobCompleteAsync(IUser user, IJob job, IGraph graph, LabelOutcome outcome, CancellationToken cancellationToken)
-			=> _processor.NotifyJobCompleteAsync(job, outcome, user, cancellationToken);
+			=> _processor.NotifyJobCompleteToUserAsync(user, job, outcome, cancellationToken);
 
 		/// <inheritdoc/>
 		public Task NotifyJobStepAbortedAsync(IEnumerable<IUser>? usersToNotify, IJob job, IJobStepBatch batch, IJobStep step, INode node, List<ILogEventData> jobStepEventData, CancellationToken cancellationToken)
@@ -153,14 +153,17 @@ namespace HordeServer.Discord.Notifications
 		#region Links
 
 		/// <inheritdoc/>
-		/// <remarks>Returns null until Phase 3; callers treat a null link as "no deep link available".</remarks>
+		/// <remarks>
+		/// Null unless this sink is the one answering for deep links - see
+		/// <see cref="DiscordServerConfig.EnableDeepLinks"/>. Horde takes the first non-null answer from any sink.
+		/// </remarks>
 		public Task<string?> GetDirectMessageLinkAsync(IReadOnlyList<UserId> userIds, CancellationToken cancellationToken = default)
-			=> Task.FromResult<string?>(null);
+			=> _processor.GetDirectMessageLinkAsync(userIds, cancellationToken);
 
 		/// <inheritdoc/>
-		/// <remarks>Returns null until Phase 3; callers treat a null link as "no deep link available".</remarks>
+		/// <remarks>See <see cref="GetDirectMessageLinkAsync"/>.</remarks>
 		public Task<string?> GetChannelLinkAsync(string channel, CancellationToken cancellationToken = default)
-			=> Task.FromResult<string?>(null);
+			=> _processor.GetChannelLinkAsync(channel, cancellationToken);
 
 		#endregion
 	}
