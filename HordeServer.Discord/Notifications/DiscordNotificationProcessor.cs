@@ -358,11 +358,15 @@ namespace HordeServer.Discord.Notifications
 				return;
 			}
 
+			// Both markers have to come from the emoji set or they render as different kinds of thing. The pair here
+			// was ✘ / ⚠, which looks symmetrical in source and is not: Twemoji has an image for U+26A0 whether or not
+			// it carries a variation selector, and none for U+2718, so the list came out a colour emoji beside a
+			// monochrome text glyph. Circles also match the vocabulary the device reports below already use.
 			embed.AddField(
 				$"Events ({notable.Count})",
 				Summarise(
 					notable,
-					x => $"{(x.Severity == LogEventSeverity.Error ? "✘" : "⚠")} {Escape(FirstLine(x.Message))}",
+					x => $"{(x.Severity == LogEventSeverity.Error ? "🔴" : "🟡")} {Escape(FirstLine(x.Message))}",
 					MaxQuotedLogEvents,
 					"see the log for the rest"));
 		}
@@ -1246,6 +1250,11 @@ namespace HordeServer.Discord.Notifications
 		/// <remarks>
 		/// Mentioned where the map knows them, named in plain text where it does not. The plain-text half is not a
 		/// placeholder for something better - it is what keeps a half-filled map from costing anyone a notification.
+		///
+		/// <c>cc</c> rather than a bare mention line, which is the more usual Discord shape, precisely because of
+		/// that plain-text half: a lone "Ada Lovelace" above an embed reads as a caption rather than an addressee.
+		/// It is also honest about what the line means - the notification went to the channel, and these are the
+		/// people who should see it, not the only people who will.
 		/// </remarks>
 		/// <param name="users">People the notification is about.</param>
 		/// <param name="cancellationToken">Cancellation token for the operation.</param>
@@ -1277,7 +1286,7 @@ namespace HordeServer.Discord.Notifications
 				}
 			}
 
-			return new DiscordAddressee($"For {String.Join(", ", parts)}", mentioned);
+			return new DiscordAddressee($"cc {String.Join(", ", parts)}", mentioned);
 		}
 
 		/// <summary>

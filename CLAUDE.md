@@ -204,6 +204,11 @@ rebuild — a stale DLL against a newer server fails at plugin load rather than 
   custom guild emoji. This shipped in `ErrorPrefix` / `WarningPrefix` and survived three phases,
   because the unit tests blank both to keep expected payloads readable. Whenever you port a *value*
   across from the Slack sink rather than its structure, ask whether Slack was interpreting it.
+- **A glyph that looks like an emoji may not be one, and a pair that looks symmetrical may not match.**
+  Discord renders with Twemoji, which has an image for anything in Unicode's emoji set and nothing for
+  anything outside it — U+26A0 `⚠` gets one with or without a variation selector, U+2718 `✘` never
+  does. The log-event list paired those two and came out a colour emoji beside a monochrome text
+  glyph. Take severity markers from the circle vocabulary (`🔴 🟠 🟡 🔵`) the processor already uses.
 - **`DiscordClient` logs a rejected request and returns; it never throws.** That is required of it —
   inside a real server a sink that throws is a sink that disturbs the other sinks — but it means
   "`SendAsync` returned" is not "the message arrived". Anything judging delivery has to watch the log,

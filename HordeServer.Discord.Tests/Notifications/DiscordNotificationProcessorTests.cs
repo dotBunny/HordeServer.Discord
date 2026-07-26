@@ -172,7 +172,7 @@ namespace HordeServer.Discord.Tests.Notifications
 			StringAssert.Contains(harness.Handler.Field(0, "Error"), "could not resolve template");
 			StringAssert.Contains(harness.Handler.Field(0, "Possibly due to"), "CL 12345 by Ada Lovelace");
 			StringAssert.Contains(harness.Handler.Field(0, "Description"), "Retarget the build templates");
-			StringAssert.Contains(harness.Handler.Message(0).GetProperty("content").GetString(), "For Ada Lovelace");
+			StringAssert.Contains(harness.Handler.Message(0).GetProperty("content").GetString(), "cc Ada Lovelace");
 		}
 
 		[TestMethod]
@@ -394,7 +394,7 @@ namespace HordeServer.Discord.Tests.Notifications
 			Assert.AreEqual(1, harness.Handler.Requests.Count);
 			StringAssert.Contains(harness.Handler.Requests[0].Uri, $"channels/{DeviceChannel}/messages");
 			StringAssert.Contains(harness.Handler.Embed(0).GetProperty("description").GetString(), "checkout will expire");
-			StringAssert.Contains(harness.Handler.Message(0).GetProperty("content").GetString(), "For Ada Lovelace",
+			StringAssert.Contains(harness.Handler.Message(0).GetProperty("content").GetString(), "cc Ada Lovelace",
 				"Slack sends this as a DM. Until the Phase 3 user map exists, naming them in the channel is how the "
 				+ "message still reaches the person it is about.");
 		}
@@ -485,7 +485,7 @@ namespace HordeServer.Discord.Tests.Notifications
 				[owner.ToString(), unknown.ToString(), "not-a-user-id"],
 				default);
 
-			Assert.AreEqual("For Ada Lovelace", harness.Handler.Message(0).GetProperty("content").GetString(),
+			Assert.AreEqual("cc Ada Lovelace", harness.Handler.Message(0).GetProperty("content").GetString(),
 				"An unknown id and an unparseable one both drop out quietly; the report is about the test.");
 		}
 
@@ -724,7 +724,7 @@ namespace HordeServer.Discord.Tests.Notifications
 
 			await harness.Processor.SendAsync(Channel(), Embed(), [HordeFakes.User("Ada Lovelace", AdaEmail)], default);
 
-			Assert.AreEqual($"For <@{AdaDiscordId}>", harness.Handler.Message(0).GetProperty("content").GetString());
+			Assert.AreEqual($"cc <@{AdaDiscordId}>", harness.Handler.Message(0).GetProperty("content").GetString());
 		}
 
 		[TestMethod]
@@ -748,7 +748,7 @@ namespace HordeServer.Discord.Tests.Notifications
 
 			await harness.Processor.SendAsync(Channel(), Embed(), [HordeFakes.User("Ada Lovelace", AdaEmail)], default);
 
-			Assert.AreEqual("For Ada Lovelace", harness.Handler.Message(0).GetProperty("content").GetString(),
+			Assert.AreEqual("cc Ada Lovelace", harness.Handler.Message(0).GetProperty("content").GetString(),
 				"A half-filled map costs a mention, never a notification.");
 			Assert.IsFalse(harness.Handler.Message(0).GetProperty("allowed_mentions").TryGetProperty("users", out _));
 		}
@@ -764,7 +764,7 @@ namespace HordeServer.Discord.Tests.Notifications
 				[HordeFakes.User("Ada Lovelace", AdaEmail), HordeFakes.User("Grace Hopper", "grace@example.com")],
 				default);
 
-			Assert.AreEqual($"For <@{AdaDiscordId}>, Grace Hopper", harness.Handler.Message(0).GetProperty("content").GetString());
+			Assert.AreEqual($"cc <@{AdaDiscordId}>, Grace Hopper", harness.Handler.Message(0).GetProperty("content").GetString());
 		}
 
 		[TestMethod]
@@ -775,7 +775,7 @@ namespace HordeServer.Discord.Tests.Notifications
 
 			await harness.Processor.SendAsync(Channel(), Embed(), [ada, ada], default);
 
-			Assert.AreEqual($"For <@{AdaDiscordId}>", harness.Handler.Message(0).GetProperty("content").GetString());
+			Assert.AreEqual($"cc <@{AdaDiscordId}>", harness.Handler.Message(0).GetProperty("content").GetString());
 		}
 
 		#endregion
@@ -815,7 +815,7 @@ namespace HordeServer.Discord.Tests.Notifications
 
 			Assert.AreEqual(1, harness.Handler.Requests.Count);
 			StringAssert.Contains(harness.Handler.Requests[0].Uri, $"channels/{AgentChannel}/messages");
-			Assert.AreEqual("For Ada Lovelace", harness.Handler.Message(0).GetProperty("content").GetString());
+			Assert.AreEqual("cc Ada Lovelace", harness.Handler.Message(0).GetProperty("content").GetString());
 		}
 
 		[TestMethod]
@@ -831,7 +831,7 @@ namespace HordeServer.Discord.Tests.Notifications
 
 			Assert.AreEqual(2, harness.Handler.Requests.Count);
 			StringAssert.Contains(harness.Handler.Requests[1].Uri, $"channels/{AgentChannel}/messages");
-			Assert.AreEqual($"For <@{AdaDiscordId}>", harness.Handler.Message(1).GetProperty("content").GetString(),
+			Assert.AreEqual($"cc <@{AdaDiscordId}>", harness.Handler.Message(1).GetProperty("content").GetString(),
 				"They are known, just not reachable directly - so the channel post can still ping them.");
 		}
 
