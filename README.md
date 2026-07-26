@@ -142,7 +142,7 @@ Add a `Discord` section to your server's `server.json`, then restart:
         "Enabled": true,
         "BotToken": "your-bot-token",
         "ApplicationId": "your-application-id",
-        "GuildId": "your-guild-id"
+        "GuildId": "your-guild-id" // Not really used, but need to have for reasons
       }
     }
   }
@@ -538,6 +538,8 @@ Two things to check in a containerised setup that do not come up otherwise:
   keeps the token out of the file — see below.
 
 ### Keeping the bot token out of `server.json`
+
+> I keep it in my server.json cause reasons.
 
 The token is a credential. Rather than writing it into `server.json`, supply it through Horde's
 Secrets plugin or an environment variable — Horde reads standard ASP.NET configuration, so every
