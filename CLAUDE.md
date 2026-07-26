@@ -278,6 +278,11 @@ rebuild — a stale DLL against a newer server fails at plugin load rather than 
   parses `channels/{guild}/{channel}/{message}` into the channel, the message to edit in place, and the
   thread to post into — and it is why the planned Mongo message-state collection was dropped. Posting
   "into a thread" is just posting to a channel whose id is the parent message's.
+- **A Discord role id means nothing outside its own guild.** Mentioning one from elsewhere does not
+  fail — it renders as raw `<@&id>` text that pings nobody, which reads as a formatting bug. Hence
+  `roles` being `alias → { guild?, role }` and `IDiscordUserResolver.GetRole` taking the destination's
+  guild. Related: `allowed_mentions` lists roles *explicitly* rather than adding `roles` to `parse`,
+  which would honour any role mention that came out of a build log.
 - **`IIssue.WorkflowThreadUrl` has one slot and the Slack sink writes it too.** It is where Epic's sink
   keeps its triage thread permalink. Taking it unconditionally would silently replace a studio's Slack
   links, so `DiscordServerConfig.EnableTriageThreads` defaults to claiming it only when the Build

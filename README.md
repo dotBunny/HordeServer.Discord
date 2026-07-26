@@ -10,12 +10,15 @@ It runs **alongside** Horde's built-in Slack support rather than replacing it, s
 gradually or run both indefinitely.
 
 > [!WARNING]
-> **Early development.** Job and step outcomes, configuration update failures, agent and device
-> reports and test health are all delivered, to channels or as direct messages as appropriate. Build
-> health **issues** and the interactive triage that goes with them are not implemented yet.
+> **Early development.** All of Horde's notifications are delivered — job and step outcomes,
+> configuration failures, agent and device reports, test health, and build health issues with
+> interactive triage. Every message type has been sent to a real Discord server and looked at, and the
+> triage buttons, the Mark Fixed dialog and the issue threads have all been driven end to end by hand.
 >
-> Nothing has been verified against a real Discord server: no message this plugin produces has ever
-> actually been delivered. Treat the formatting as unproven and point it at a test channel first.
+> **What has not been exercised is a running Horde server.** Everything so far has been verified by
+> driving the plugin directly with stand-in data. The code that writes back to Horde's issue database
+> when somebody presses a button has never executed against a real one. Point this at a test channel
+> and a test stream before you trust it on a busy farm.
 >
 > Installing it is safe regardless: with no bot token or no channel configured, it loads and does
 > nothing, and it cannot disturb the Slack sink either way.
@@ -98,9 +101,38 @@ Copy that DLL next to your Horde server binaries, in the same directory as `Hord
 Horde finds plugins by scanning that directory, so nothing else needs to change — no configuration
 files to register, no changes to Horde itself.
 
-### 4. Enable and configure
+Running Horde in Docker? See [Installing into a container](#installing-into-a-container) — you can
+mount the DLL in rather than rebuilding the image.
 
-Add a `Discord` section to your server's `server.json`, then restart the server:
+### 4. Create the Discord bot
+
+1. Create an application at <https://discord.com/developers/applications>. Note its **Application ID**
+   from the General Information page.
+2. Under **Bot**, click **Reset Token** and copy the token. Treat it like a password.
+3. Invite the bot to your Discord server. Substitute your application id:
+
+   ```
+   https://discord.com/oauth2/authorize?client_id=YOUR_APPLICATION_ID&scope=bot+applications.commands&permissions=84992
+   ```
+
+   `84992` is **View Channel + Send Messages + Embed Links + Read Message History** — everything
+   needed to post notifications. For issue triage threads use `permissions=309237730304`, which adds
+   **Create Public Threads** and **Send Messages in Threads**; the second is easy to forget and is
+   what lets the plugin post updates *into* a thread it created.
+
+**No privileged intents are required** — leave Message Content, Server Members and Presence off. The
+plugin requests zero gateway intents, because the only inbound events it wants are its own button
+presses, and Discord delivers those regardless. That also means the application never needs Discord's
+verification process.
+
+> [!IMPORTANT]
+> **Embed Links is not optional.** Every notification this plugin sends is an embed, so without that
+> permission Discord rejects all of them. Check it per-channel too: a channel-level override beats a
+> role-level grant, and that is the single most common reason nothing arrives.
+
+### 5. Enable the plugin
+
+Add a `Discord` section to your server's `server.json`, then restart:
 
 ```jsonc
 {
@@ -110,15 +142,44 @@ Add a `Discord` section to your server's `server.json`, then restart the server:
         "Enabled": true,
         "BotToken": "your-bot-token",
         "ApplicationId": "your-application-id",
-        "GuildId": "your-server-id",
-        "JobNotificationChannel": "123456789012345678"
+        "GuildId": "your-guild-id"
       }
     }
   }
 }
 ```
 
-The plugin is **disabled by default** and does nothing until `Enabled` is `true`.
+The plugin is **disabled by default** and does nothing until `Enabled` is `true`. At this point it
+loads and authenticates but has nowhere to post — that is the next step.
+
+### 6. Tell it where to post
+
+Channel routing lives in Horde's **global** config, not `server.json`, so it reloads without a restart.
+Add a `discord` section under `plugins` in `globals.json`:
+
+```jsonc
+{
+  "plugins": {
+    "discord": {
+      "guilds": { "studio": "112233445566778899" },
+      "channels": {
+        "horde-builds": { "label": "build announcements", "channel": "998877665544332211" }
+      },
+      "fallbackChannel": "555566667777888899"
+    }
+  }
+}
+```
+
+> [!NOTE]
+> The key is **`discord`, lowercase**. Horde normalises plugin names, and `"Discord"` under `plugins`
+> will not bind — unlike in `server.json`, where the casing above is what Horde expects.
+
+Restart once more if you like, but you do not have to: global config is picked up on Horde's next
+config poll. **On every reload the plugin logs each Horde channel it has no mapping for**, which is
+the quickest way to discover what else needs an entry.
+
+See [Channel routing](#channel-routing) below for what the keys mean and where to find them.
 
 ## What gets sent, and where
 
@@ -134,7 +195,8 @@ The plugin is **disabled by default** and does nothing until `Enabled` is `true`
 | Device pool health and device problems | The channel on the report (a workflow's `reportChannel`) |
 | Device checkout notices | **A direct message**, falling back to `deviceNotificationChannel` |
 | Test health degraded, and its recovery | The workflow's `reportChannel` |
-| Build health issues and triage | *Not implemented — Slack only for now* |
+| A build health issue changed | The workflow's `triageChannel`, **and a direct message** to whoever owns it |
+| The periodic issue digest | The channel Horde puts on the report |
 
 Two behaviours are worth knowing before you wonder whether something is broken:
 
@@ -150,8 +212,80 @@ Two behaviours are worth knowing before you wonder whether something is broken:
 
 ## Configuration
 
-There are two halves. **Channel routing** lives in a hot-reloadable `*.discord.json` config file;
-**credentials and infrastructure** live in `server.json` and need a restart.
+Settings are split across **two files**, and which one a setting lives in decides how you change it:
+
+| | `server.json` | `globals.json` |
+|---|---|---|
+| **Holds** | Credentials and infrastructure | Routing — channels, people, roles, guilds |
+| **Section** | `Horde.Plugins.Discord` (capital D) | `plugins.discord` (**lowercase**) |
+| **To change** | Edit and **restart the server** | Edit; picked up on the next config poll |
+| **Why** | A bot token should not be in a file the dashboard can serve | Onboarding someone or re-pointing a stream should not need a restart |
+
+The two never overlap except for the channel **overrides** in `server.json`, which exist for a first
+run before any routing is configured and are normally left unset.
+
+<details>
+<summary>A complete working example of both files</summary>
+
+`server.json` — note the capitalisation, which follows .NET configuration rather than Horde's own
+config files:
+
+```jsonc
+{
+  "Horde": {
+    "Plugins": {
+      "Discord": {
+        "Enabled": true,
+        "BotToken": "MTUz…",
+        "ApplicationId": "1530645157567926394",
+        "GuildId": "1440061673162670144"
+      }
+    }
+  }
+}
+```
+
+`globals.json` — everything else:
+
+```jsonc
+{
+  "plugins": {
+    "discord": {
+      "guilds": {
+        "studio": "1440061673162670144"
+      },
+
+      "channels": {
+        // Keyed by whatever Horde already stores for that channel.
+        "C0832ESJUR5": { "label": "horde-triage", "channel": "998877665544332211" },
+        "horde-builds": { "label": "build announcements", "channel": "112233445566778899" }
+      },
+
+      // Anything unmapped lands here, labelled with the Horde channel it was meant for.
+      "fallbackChannel": "555566667777888899",
+
+      "userMap": {
+        "ada@example.com": "200000000000000001"
+      },
+
+      "roles": {
+        "S0123456789": { "label": "build-triage", "role": "400000000000000001" }
+      }
+    }
+  }
+}
+```
+
+To keep it out of `globals.json`, put the same `plugins` block in its own file and include it — Horde
+merges includes into the global config:
+
+```jsonc
+{
+  "include": [ { "path": "discord.json" } ]
+}
+```
+
+</details>
 
 ### Channel routing
 
@@ -160,16 +294,28 @@ template — and it stores that as a **Slack channel id** like `C0832ESJUR5`. Ra
 configure all of that a second time, this plugin translates the last hop: you say where each of those
 channels lands in Discord.
 
+All of the following goes inside `plugins.discord` in `globals.json`:
+
 ```jsonc
 {
   "guilds": { "studio": "112233445566778899" },
+  "defaultGuild": "studio",
   "channels": {
     "C0832ESJUR5": { "label": "horde-triage", "guild": "studio", "channel": "998877665544332211" },
     "C085J3A6FHN": { "label": "horde-builds", "channel": "112233445566778899" }
   },
-  "fallbackChannel": "555566667777888899"
+  "fallbackChannel": "555566667777888899",
+  "fallbackGuild": "studio"
 }
 ```
+
+| Key | Description |
+|---|---|
+| `guilds` | Short name → guild id, so an id appears once. One bot token serves any number of guilds. |
+| `defaultGuild` | Name from `guilds` used by anything that does not say. Unnecessary with exactly one guild — that one is the default. |
+| `channels` | The translation table. Keys are Horde's channel, values say where it lands. |
+| `fallbackChannel` | Catch-all for unmapped channels. Omit it and unmapped channels are logged once and dropped. |
+| `fallbackGuild` | Guild the fallback is in. Defaults to `defaultGuild`. |
 
 - **Keys** are whatever Horde already has for that channel. That's a Slack channel id for workflow
   `reportChannel` / `triageChannel`, the issue and device reports, and per-stream and per-template job
@@ -189,7 +335,8 @@ you don't have to discover a gap by noticing a notification that never arrived.
 ### People
 
 Discord has no way to look someone up by email address, and an email address is all Horde knows about
-a person that Discord might share. So the association has to be written down:
+a person that Discord might share. So the association has to be written down — again inside
+`plugins.discord`:
 
 ```jsonc
 {
@@ -197,7 +344,8 @@ a person that Discord might share. So the association has to be written down:
     "ada@example.com": "200000000000000001"
   },
   "roles": {
-    "S0123456789": "400000000000000001"
+    "S0123456789": { "label": "build-triage", "role": "400000000000000001" },
+    "S9876543210": { "label": "render-triage", "guild": "studio-b", "role": "400000000000000002" }
   }
 }
 ```
@@ -208,9 +356,36 @@ a person that Discord might share. So the association has to be written down:
   channel rather than mentioned or messaged directly. This lives in the hot-reloadable config on
   purpose: adding a new hire should not need a server restart.
 - **`roles`** maps the Slack user-group handle Horde pings — a workflow's `triageAlias`,
-  `escalateAlias` or `triageTypeAliases` — to the Discord role that stands in for it. Nothing uses
-  this until issue triage is implemented; it is configurable now so the startup report can tell you
-  which aliases have no role behind them.
+  `escalateAlias` or `triageTypeAliases` — to the Discord role that stands in for it. An issue that
+  **nobody has been assigned** pings its workflow's triage role; once somebody takes it the pings stop,
+  which is what keeps a triage channel from being muted. An alias with no role behind it costs a ping,
+  never a notification, and the startup report names the gaps.
+
+  `guild` is optional and only matters with more than one guild: **a role id means nothing outside its
+  own guild**, and mentioning one from elsewhere renders as raw text that pings nobody. Naming the
+  guild lets the mention be skipped instead. Leave it out in a single-guild install.
+
+### Multiple guilds
+
+One bot token serves any number of guilds it has been invited to. Name each in `guilds`, then point
+individual channels and roles at them; `defaultGuild` covers everything that does not say. With exactly
+one guild configured, that one is the default and nothing needs to name it.
+
+More than one *token* would be a larger change, because Discord's global rate limit is per token.
+
+### Global settings reference
+
+All under `plugins.discord` in `globals.json`. Every one of these reloads without a restart.
+
+| Key | Type | Description |
+|---|---|---|
+| `guilds` | map | Short name → guild snowflake, so an id is written once. |
+| `defaultGuild` | string | Name from `guilds` used by anything that does not name one. Unnecessary with exactly one guild. |
+| `channels` | map | Horde channel → `{ label?, guild?, channel }`. The routing table. |
+| `fallbackChannel` | string | Catch-all for unmapped Horde channels. Omit and they are logged once and dropped. |
+| `fallbackGuild` | string | Guild the fallback channel is in. Defaults to `defaultGuild`. |
+| `userMap` | map | Horde account email → Discord user snowflake. |
+| `roles` | map | Horde user-group handle → `{ label?, guild?, role }`. |
 
 ### Server settings
 
@@ -221,7 +396,7 @@ All under `Horde:Plugins:Discord` in `server.json`. Changing any of them require
 | `Enabled` | bool | Whether to load the plugin at all. Defaults to `false`. |
 | `BotToken` | string | Bot token used to authenticate with Discord. Without it the plugin loads but discards notifications. |
 | `ApplicationId` | string | Your Discord application (client) id. Needed for slash commands and interactive components. |
-| `GuildId` | string | The Discord server the bot operates in. Only used for member lookup and command registration — posting uses channel ids directly. |
+| `GuildId` | string | The Discord server the bot operates in. Informational — nothing in the posting path reads it, because channels and roles carry their own guild. Set it anyway; it appears in the startup line and is what future guild-scoped features will use. |
 | `EnableInteractions` | bool | Whether to connect to Discord's gateway for buttons and modals. Posting works without it. Defaults to `true`. |
 | `EnableTriageThreads` | bool | Whether issue triage keeps one message per issue in a thread, rewritten as the issue changes, instead of posting a new message per change. **Leave unset unless you mean it** — see below. |
 | `EnableDeepLinks` | bool | Whether the dashboard's "message these people" buttons should open Discord. Leave unset — see below. |
@@ -265,37 +440,132 @@ dashboard at Discord even alongside Slack, or `false` to stay out of it.
 Note that a "message these people" link only works for a single person. Discord's group conversations
 are not something a bot can create.
 
-### Finding channel ids
+### Finding the ids
 
-Discord channels are identified by **numeric id**, not by name — there is no `#channel` syntax. In
-Discord, enable **Settings → Advanced → Developer Mode**, then right-click a channel and choose **Copy
-Channel ID**.
+A mapping has a Horde channel on the left and a Discord channel on the right, and they are found in
+completely different places.
 
-Those ids go on the *right* of a mapping. If you paste a Slack channel id or a `#channel-name` where a
-Discord id belongs, the plugin says so by name at startup rather than silently posting nowhere.
+**The Discord id (right side).** Discord channels are identified by **numeric id**, never by name —
+there is no `#channel` syntax. Enable **Settings → Advanced → Developer Mode**, then right-click a
+channel and choose **Copy Channel ID**. Same for users and roles: **Copy User ID**, **Copy Role ID**.
+
+**The Horde key (left side).** This is whatever your Horde config already stores, which you find by
+searching your own `globals.json` and stream files:
+
+| Horde setting | Where it lives | What it holds |
+|---|---|---|
+| `triageChannel` | A workflow, or a stream | Slack channel id (`C0832ESJUR5`) |
+| `reportChannel` | A workflow | Slack channel id |
+| `notificationChannel` | A stream or a template | Slack channel id |
+| `jobNotificationChannel` | `server.json`, Build plugin | Channel **name**, no `#` |
+| `updateStreamsNotificationChannel` | `server.json`, Build plugin | Channel **name**, no `#` |
+| `triageAlias`, `escalateAlias` | A workflow | Slack user-group handle (`S0123456789`) |
+
+The two `server.json` ones are the odd pair: Horde stores a bare name there rather than an id, so key
+those on the name.
+
+**You do not have to find them all up front.** Start with a `fallbackChannel` and let the plugin tell
+you: at startup and on every config reload it lists every Horde channel that has no mapping, by name,
+and anything unmapped lands in the fallback labelled with the channel it was meant for.
+
+If you paste a Slack channel id or a `#channel-name` where a Discord id belongs, the plugin names the
+offending entry at startup rather than silently posting nowhere.
+
+### Installing into a container
+
+If Horde runs from a container image you do not control, you do not need to rebuild that image to add
+the plugin. **Bind-mount the DLL into the server's application directory** — the plugin is one file
+with no dependencies, so the mount *is* the install.
+
+The scan directory is **`/app`**, the image's working directory, alongside `HordeServer.dll` and the
+plugins Epic ships:
+
+```
+/app/HordeServer.dll              ← the server
+/app/HordeServer.Build.dll        ← Epic's plugins
+/app/HordeServer.Compute.dll
+…
+/app/HordeServer.Discord.dll      ← yours, mounted in
+```
+
+Add one line to the `horde-server` service in your `docker-compose.yml`:
+
+```yaml
+services:
+  horde-server:
+    image: ghcr.io/epicgames/horde-server:latest
+    volumes:
+      - ./data:/app/Data
+      - ./server.json:/app/Data/server.json
+      # The plugin. One file, mounted read-only beside the server's own assemblies.
+      - ./HordeServer.Discord.dll:/app/HordeServer.Discord.dll:ro
+```
+
+Keep a built copy of the DLL beside the compose file, or mount it straight out of the build output so
+there is no copy step at all:
+
+```yaml
+      - ../../HordeServer.Discord/HordeServer.Discord/bin/Development/net10.0/HordeServer.Discord.dll:/app/HordeServer.Discord.dll:ro
+```
+
+Confirm the mount landed where the scan will find it:
+
+```
+docker compose exec horde-server ls -l /app/HordeServer.Discord.dll
+```
+
+> [!IMPORTANT]
+> **After rebuilding the plugin, recreate the container — do not just restart it.**
+>
+> ```
+> dotnet build -c Development
+> docker compose up -d --force-recreate horde-server
+> ```
+>
+> A single-file bind mount is bound to the file's *inode*, not its path. `dotnet build` writes a new
+> file, so the container keeps serving the old one and `docker compose restart` will not change that —
+> the container is the same container, with the same mount. The symptom is a plugin that stubbornly
+> behaves like the previous build, which is a genuinely confusing hour. Mounting a *directory* does not
+> have this problem, but there is nowhere useful to mount one: Horde only scans its own app directory.
+
+Two things to check in a containerised setup that do not come up otherwise:
+
+- **`ConfigPath` may not be a local file.** It often points into Perforce (`//Horde/globals.json`), in
+  which case the `plugins.discord` section belongs in *that* file, not in anything under `./data`.
+  Check what your `server.json` sets it to before going looking for a file that is not there.
+- **`server.json` is usually mounted too**, so add the `Horde.Plugins.Discord` block to the file on
+  the host and recreate the container. Setting it through environment variables works as well and
+  keeps the token out of the file — see below.
 
 ### Keeping the bot token out of `server.json`
 
 The token is a credential. Rather than writing it into `server.json`, supply it through Horde's
-Secrets plugin or an environment variable:
+Secrets plugin or an environment variable — Horde reads standard ASP.NET configuration, so every
+setting in the table above has an environment-variable form with `__` for each level:
 
 ```
 Horde__Plugins__Discord__BotToken=your-bot-token
 ```
 
-### Creating the bot
+In Compose that is how the rest of the connection settings are already passed, so it fits the pattern:
 
-1. Create an application at <https://discord.com/developers/applications>.
-2. Under **Bot**, create a bot and copy its token.
-3. Invite it to your Discord server with permission to view and send messages in the target channels.
+```yaml
+services:
+  horde-server:
+    environment:
+      Horde__Plugins__Discord__Enabled: "true"
+      Horde__Plugins__Discord__BotToken: ${DISCORD_BOT_TOKEN}
+      Horde__Plugins__Discord__ApplicationId: "1530645157567926394"
+      Horde__Plugins__Discord__GuildId: "1440061673162670144"
+```
 
-No privileged intents are required. The bot can only send someone a direct message if it shares a
-server with them and they accept messages from server members, which is why an unreachable person
-falls back to a channel.
+With `${DISCORD_BOT_TOKEN}` taken from a `.env` file beside the compose file, the token stays out of
+both `server.json` and version control.
 
 ## Verifying the installation
 
-After restarting, the Horde server log should contain two lines:
+After restarting — `docker compose logs -f horde-server` if it is containerised — the Horde server log
+should contain two lines:
 
 ```
 Loading …\HordeServer.Discord.dll
@@ -309,6 +579,39 @@ useful way to verify the install before creating a bot.
 Horde also logs `Added plugin 'Discord'`, but only at **debug** level — you will not see it unless you
 have lowered the server's log level.
 
+With `EnableInteractions` on you should also see the gateway connect:
+
+```
+Discord gateway ready as YourBot (1530645157567926394), session …
+Discord interaction router listening (issue)
+```
+
+If it instead logs a close code, `4004` means the bot token is wrong and `4014` means a privileged
+intent was requested that the application has not been granted — neither is retried, because
+reconnecting cannot fix either.
+
+### Sending test messages without a Horde server
+
+You do not have to wait for a real build to fail to find out whether your channel mapping and
+permissions work. The repository includes a tool that posts one of every notification to a channel,
+driving the real formatting code with stand-in data — **no Horde server, MongoDB or Redis needed**:
+
+```
+dotnet run --project tools/DiscordSmoke -c Development                 # all of them
+dotnet run --project tools/DiscordSmoke -c Development -- --help       # list them
+dotnet run --project tools/DiscordSmoke -c Development -- issue step   # just those
+dotnet run --project tools/DiscordSmoke -c Development -- --gateway 50 # connect the gateway
+dotnet run --project tools/DiscordSmoke -c Development -- --modal      # the triage dialog, end to end
+```
+
+It reads its bot token and target channel from `Horde.local.props`, the same git-ignored file that
+points the build at your Horde tree — see `Horde.local.props.template`. Point it at a scratch channel;
+the sample data is deliberately awkward, with names containing markdown and errors long enough to be
+truncated.
+
+A scenario that reports `REJECTED` prints the Discord error code and what to do about it, which is
+usually faster than reading a server log.
+
 ## Troubleshooting
 
 **The server fails to start with `Unable to find plugin(s) enabled in config file: Discord`**
@@ -317,15 +620,51 @@ must sit directly beside `HordeServer.dll`, not in a subdirectory.
 
 **No `Loading …HordeServer.Discord.dll` line in the log**
 The assembly is missing from the application directory, or it was renamed. Horde only scans for files
-named `HordeServer.*.dll` — the filename matters.
+named `HordeServer.*.dll` — the filename matters. In a container, check the mount actually landed:
+`docker compose exec horde-server ls -l /app/HordeServer.Discord.dll`. A bind mount whose source path
+does not exist can produce an empty *directory* at the destination rather than an error.
+
+**The plugin behaves like an older build after rebuilding it**
+A single-file bind mount follows the inode, and `dotnet build` writes a new file. `docker compose
+restart` reuses the same container and therefore the same mount. Use `docker compose up -d
+--force-recreate horde-server`.
 
 **The server throws `TypeLoadException` or `MissingMethodException` on startup**
 The plugin was built against a different version of Horde than the one running. Rebuild it against
 your current server (see [Upgrading](#upgrading)).
 
 **Notifications are not appearing**
-Confirm the bot is a member of the server, can see the target channel, and has permission to send
-messages there. Check that channel ids are numeric ids rather than names.
+The plugin logs every rejection with Discord's own error code. Find it in the server log and match it
+below — the code says exactly which of these it is, and guessing between them wastes a lot of time:
+
+| Code | Meaning | Fix |
+|---|---|---|
+| `50001` | Missing Access | The bot cannot see the channel. Invite it, then grant **View Channel** on that channel specifically — a channel override beats a role grant. |
+| `50013` | Missing Permissions | It can see the channel but cannot post. Usually **Embed Links**, without which every notification is refused. |
+| `10003` | Unknown Channel | The id is wrong, or the channel is in a guild the bot is not in. |
+| `50007` | Cannot send to this user | They do not accept direct messages from server members. The notification falls back to a channel. |
+| `50278` | No mutual guilds | The `userMap` entry points at somebody who is not in the guild. |
+| `40001` | Unauthorized | The bot token is wrong or was regenerated. |
+
+If there is no rejection in the log at all, nothing was sent — check the routing map, and look for the
+startup line naming unmapped Horde channels.
+
+**Nothing is mapped, and the startup report is empty too**
+The global config did not bind. The section under `plugins` must be spelled **`discord`, lowercase**;
+`"Discord"` there is silently ignored. Note this is the opposite of `server.json`, where the section is
+`Horde:Plugins:Discord`.
+
+**Emoji show up as `:red_circle:` text**
+Something set `ErrorPrefix` or `WarningPrefix` to a Slack-style shortcode. Discord does not expand those
+for anything a bot posts — use the literal emoji character, or a custom guild emoji as `<:name:id>`.
+
+**A role mention appears as raw `<@&123…>` text**
+The role id belongs to a different guild than the channel it was posted in. Give that `roles` entry a
+`guild`, or map a role that exists in the destination guild.
+
+**Buttons say "This interaction failed"**
+The gateway is not connected — check for the `Discord gateway ready` line, and that `EnableInteractions`
+is not `false`.
 
 ## Upgrading
 

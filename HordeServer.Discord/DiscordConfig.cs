@@ -40,13 +40,12 @@ namespace HordeServer
 		/// Horde's workflows name a Slack alias to ping when nobody is assigned to an issue - <c>triageAlias</c>,
 		/// <c>escalateAlias</c> and the per-issue-type <c>triageTypeAliases</c>. Slack renders those as a user-group
 		/// mention; the Discord equivalent is a role mention, so this is the same translation the <see cref="Channels"/>
-		/// map performs, on the other axis. Keys are whatever Horde carries, values are Discord role snowflakes.
+		/// map performs, on the other axis. Keys are whatever Horde carries.
 		///
-		/// Nothing pings a role until issue triage lands in Phase 4. It is configurable now because
-		/// <c>DiscordRoutingReport</c> names the gaps at startup, and filling the map in is the sort of thing that
-		/// wants doing before it is urgent rather than during an outage.
+		/// Each entry may name a guild, because **a role id only means anything inside its own guild** - see
+		/// <see cref="DiscordRoleMapping"/>. Leave it unset in a single-guild install.
 		/// </remarks>
-		public Dictionary<string, string> Roles { get; set; } = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+		public Dictionary<string, DiscordRoleMapping> Roles { get; set; } = new Dictionary<string, DiscordRoleMapping>(StringComparer.OrdinalIgnoreCase);
 
 		/// <summary>
 		/// Named Discord guilds, mapping a short name to a guild snowflake.
@@ -111,9 +110,12 @@ namespace HordeServer
 		/// <summary>
 		/// Role mappings after validation, keyed by the handle Horde carries.
 		/// </summary>
+		/// <remarks>
+		/// The guild is resolved to a snowflake here, or left null for a role that may be mentioned anywhere.
+		/// </remarks>
 		[JsonIgnore]
-		public IReadOnlyDictionary<string, string> ResolvedRoles { get; private set; }
-			= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+		public IReadOnlyDictionary<string, DiscordRole> ResolvedRoles { get; private set; }
+			= new Dictionary<string, DiscordRole>(StringComparer.OrdinalIgnoreCase);
 
 		/// <summary>
 		/// The catch-all destination, if one is configured and valid.
@@ -183,7 +185,46 @@ namespace HordeServer
 			ResolvedDefaultGuildId = defaultGuildId;
 			ResolvedFallback = BuildFallback(defaultGuildId, guilds, logger);
 			ResolvedUsers = ResolveSnowflakes(UserMap, "user", logger, IsProbablyEmail);
-			ResolvedRoles = ResolveSnowflakes(Roles, "role", logger, null);
+			ResolvedRoles = ResolveRoles(guilds, logger);
+		}
+
+		/// <summary>
+		/// Validates the role map and resolves each entry's guild.
+		/// </summary>
+		/// <remarks>
+		/// A role whose guild names nothing in the <c>guilds</c> map is dropped rather than treated as global. The
+		/// alternative would mention it in guilds it does not belong to, which renders as raw text and pings nobody
+		/// - a failure that looks like a formatting bug rather than a configuration one.
+		/// </remarks>
+		Dictionary<string, DiscordRole> ResolveRoles(Dictionary<string, string> guilds, ILogger? logger)
+		{
+			Dictionary<string, DiscordRole> resolved = new Dictionary<string, DiscordRole>(StringComparer.OrdinalIgnoreCase);
+
+			foreach ((string alias, DiscordRoleMapping mapping) in Roles)
+			{
+				if (!DiscordChannelIds.IsDiscordSnowflake(mapping.Role))
+				{
+					logger?.LogError("Discord role mapping for '{Alias}' is set to '{Role}', which is not a role id.",
+						alias, mapping.Role);
+					continue;
+				}
+
+				string? guildId = null;
+
+				if (mapping.Guild != null)
+				{
+					guildId = ResolveGuild(mapping.Guild, guilds, logger, $"role '{alias}'");
+
+					if (guildId == null)
+					{
+						continue;
+					}
+				}
+
+				resolved[alias] = new DiscordRole(mapping.Role, guildId);
+			}
+
+			return resolved;
 		}
 
 		/// <summary>

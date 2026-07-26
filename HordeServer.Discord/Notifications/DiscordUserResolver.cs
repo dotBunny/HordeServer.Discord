@@ -44,9 +44,15 @@ namespace HordeServer.Discord.Notifications
 		/// <summary>
 		/// Finds the Discord role standing in for one of Horde's user-group handles.
 		/// </summary>
+		/// <remarks>
+		/// Scoped by guild, because **a role id only means anything inside its own guild**. Mentioning one from
+		/// elsewhere renders as raw <c>&lt;@&amp;id&gt;</c> text and pings nobody, so a role that does not belong to
+		/// the destination is treated as unmapped and the handle is named in plain text instead.
+		/// </remarks>
 		/// <param name="alias">Handle as Horde carries it - a workflow's triage or escalation alias.</param>
-		/// <returns>The role snowflake, or null if it is not mapped.</returns>
-		string? GetRoleId(string? alias);
+		/// <param name="guildId">Guild the message is going to, or null if it is not known.</param>
+		/// <returns>The role, or null if nothing usable is mapped.</returns>
+		DiscordRole? GetRole(string? alias, string? guildId);
 	}
 
 	/// <summary>
@@ -140,16 +146,30 @@ namespace HordeServer.Discord.Notifications
 		}
 
 		/// <inheritdoc/>
-		public string? GetRoleId(string? alias)
+		public DiscordRole? GetRole(string? alias, string? guildId)
 		{
 			if (String.IsNullOrWhiteSpace(alias))
 			{
 				return null;
 			}
 
-			if (_config.CurrentValue.ResolvedRoles.TryGetValue(alias, out string? roleId))
+			if (_config.CurrentValue.ResolvedRoles.TryGetValue(alias, out DiscordRole? role))
 			{
-				return roleId;
+				if (role.UsableIn(guildId))
+				{
+					return role;
+				}
+
+				// Reported per alias *and* guild: the same alias triaging into two guilds is exactly the case this
+				// exists for, and one of them being mapped is not evidence about the other.
+				if (_reported.TryAdd($"role:{alias}:{guildId}", 0))
+				{
+					_logger.LogWarning("Horde alias '{Alias}' is mapped to a role in another guild, so it cannot be "
+						+ "pinged in guild {GuildId}. Add a role for that guild, or remove the guild from the "
+						+ "mapping if the role is shared.", alias, guildId);
+				}
+
+				return null;
 			}
 
 			if (_reported.TryAdd($"role:{alias}", 0))

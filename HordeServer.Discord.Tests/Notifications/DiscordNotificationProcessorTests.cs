@@ -50,6 +50,7 @@ namespace HordeServer.Discord.Tests.Notifications
 
 		const string AdaEmail = "ada@example.com";
 		const string AdaDiscordId = "200000000000000001";
+		const string TriageRoleId = "400000000000000001";
 
 		#region Configuration
 
@@ -1282,6 +1283,114 @@ namespace HordeServer.Discord.Tests.Notifications
 				"Ordered by workflow then stream, the way Slack orders them, so a studio reading both sees the "
 				+ "same sequence.");
 		}
+
+		#region Triage role mentions
+
+		// The alias-to-issue wiring - which workflow's triageAlias applies, and only while nobody is assigned -
+		// needs a populated BuildConfig with streams and workflows, which nothing here builds. These cover the half
+		// that can be wrong on its own: turning an alias into a mention that actually pings, in the right guild.
+
+		[TestMethod]
+		public async Task AnAliasIsMentionedAndAllowedToPing()
+		{
+			Harness harness = new Harness(config: WithRole(new DiscordRoleMapping { Role = TriageRoleId }));
+
+			await harness.Processor.SendAsync(
+				[new DiscordDestination(WorkflowChannel, GuildId)],
+				new DiscordEmbedBuilder().WithTitle("Nobody has picked this up"),
+				null,
+				null,
+				["S0123456789"],
+				default);
+
+			JsonElement message = harness.Handler.Message(0);
+
+			StringAssert.Contains(message.GetProperty("content").GetString(), $"<@&{TriageRoleId}>");
+			Assert.AreEqual(TriageRoleId, message.GetProperty("allowed_mentions").GetProperty("roles")[0].GetString(),
+				"Without the role in allowed_mentions the text renders as a mention and notifies nobody.");
+		}
+
+		[TestMethod]
+		public async Task ARoleFromAnotherGuildIsNotMentioned()
+		{
+			Harness harness = new Harness(config: WithRole(new DiscordRoleMapping { Guild = "studio", Role = TriageRoleId }));
+
+			await harness.Processor.SendAsync(
+				[new DiscordDestination(WorkflowChannel, "100000000000000099")],
+				new DiscordEmbedBuilder().WithTitle("Nobody has picked this up"),
+				null,
+				null,
+				["S0123456789"],
+				default);
+
+			Assert.IsFalse(harness.Handler.Message(0).TryGetProperty("content", out _),
+				"A role id only means anything in its own guild; elsewhere it renders as raw text.");
+		}
+
+		[TestMethod]
+		public async Task AnUnmappedAliasIsSimplyNotPinged()
+		{
+			Harness harness = new Harness();
+
+			await harness.Processor.SendAsync(
+				[new DiscordDestination(WorkflowChannel, GuildId)],
+				new DiscordEmbedBuilder().WithTitle("Nobody has picked this up"),
+				null,
+				null,
+				["S0123456789"],
+				default);
+
+			Assert.IsFalse(harness.Handler.Message(0).TryGetProperty("content", out _),
+				"A half-filled role map should cost a ping, not a notification.");
+		}
+
+		[TestMethod]
+		public async Task RoleAndUserMentionsCoexist()
+		{
+			IUser ada = HordeFakes.User("Ada Lovelace", AdaEmail);
+			FakeUserCollection users = new FakeUserCollection();
+			users.Add(ada);
+
+			DiscordConfig config = WithRole(new DiscordRoleMapping { Role = TriageRoleId }, (AdaEmail, AdaDiscordId));
+			Harness harness = new Harness(users, config);
+
+			await harness.Processor.SendAsync(
+				[new DiscordDestination(WorkflowChannel, GuildId)],
+				new DiscordEmbedBuilder().WithTitle("Nobody has picked this up"),
+				[ada],
+				null,
+				["S0123456789"],
+				default);
+
+			JsonElement message = harness.Handler.Message(0);
+			JsonElement allowed = message.GetProperty("allowed_mentions");
+
+			StringAssert.Contains(message.GetProperty("content").GetString(), $"<@&{TriageRoleId}>");
+			StringAssert.Contains(message.GetProperty("content").GetString(), $"<@{AdaDiscordId}>");
+			Assert.AreEqual(1, allowed.GetProperty("roles").GetArrayLength());
+			Assert.AreEqual(1, allowed.GetProperty("users").GetArrayLength());
+		}
+
+		static DiscordConfig WithRole(DiscordRoleMapping role, params (string Email, string DiscordId)[] users)
+		{
+			DiscordConfig config = new DiscordConfig
+			{
+				Guilds = { ["studio"] = GuildId },
+				Channels = { [WorkflowSlackId] = new DiscordChannelMapping { Label = "horde-triage", Channel = WorkflowChannel } },
+				Roles = { ["S0123456789"] = role },
+			};
+
+			foreach ((string email, string discordId) in users)
+			{
+				config.UserMap[email] = discordId;
+			}
+
+			config.PostLoad(new PluginConfigOptions(ConfigVersion.Latest, [], new Acls.AclConfig(), NullLogger.Instance));
+
+			return config;
+		}
+
+		#endregion
 
 		[TestMethod]
 		public async Task TheFirstNotificationStartsAThreadAndRecordsWhereItIs()

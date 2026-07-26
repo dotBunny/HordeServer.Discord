@@ -48,6 +48,12 @@
          Optional; without it those scenarios are skipped. You must share the server with the bot. -->
     <DiscordTestUserId></DiscordTestUserId>
 
+    <!-- DISCORD_TEST_ROLE_ID - a role for the triage-ping scenario to mention. Optional.
+         Point it at a role NOBODY is in. The bot's own integration role is ideal: Discord creates one per guild
+         when the bot is invited, and its only member is the bot. Naming a real team role here means pinging that
+         team every time the smoke tool runs. -->
+    <DiscordTestRoleId></DiscordTestRoleId>
+
     <!-- DISCORD_DASHBOARD_URL - used to build the links in each message. Any URL will do. -->
     <DiscordDashboardUrl>https://horde.example.com/</DiscordDashboardUrl>
   </PropertyGroup>

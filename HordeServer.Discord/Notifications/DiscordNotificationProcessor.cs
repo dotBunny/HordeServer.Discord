@@ -455,7 +455,7 @@ namespace HordeServer.Discord.Notifications
 
 			if (recipient == null)
 			{
-				await SendAsync(triage, embed, null, buttons, cancellationToken);
+				await SendAsync(triage, embed, null, buttons, ResolveTriageAliases(issue), cancellationToken);
 				return;
 			}
 
@@ -507,7 +507,7 @@ namespace HordeServer.Discord.Notifications
 				_logger.LogInformation("Issue {IssueId} already has a workflow thread at {Url}, which is not a "
 					+ "Discord link. Leaving it alone and posting without a thread.", issue.Id, issue.WorkflowThreadUrl);
 
-				await SendAsync(triage, BuildIssueEmbed(issue), null, BuildIssueButtons(issue), cancellationToken);
+				await SendAsync(triage, BuildIssueEmbed(issue), null, BuildIssueButtons(issue), ResolveTriageAliases(issue), cancellationToken);
 				return;
 			}
 
@@ -728,6 +728,30 @@ namespace HordeServer.Discord.Notifications
 		IReadOnlyList<DiscordDestination> ResolveIssueChannels(IIssue issue)
 		{
 			List<string> channels = new List<string>();
+
+			foreach ((string? channel, string? _) in IssueTriageTargets(issue))
+			{
+				if (channel != null)
+				{
+					channels.Add(channel);
+				}
+			}
+
+			return channels.Count > 0
+				? _channels.ResolveAll(channels.Distinct(StringComparer.Ordinal))
+				: _channels.ResolveCategory(DiscordChannelCategory.Job);
+		}
+
+		/// <summary>
+		/// The triage channels an issue belongs in, each with the alias that triages it.
+		/// </summary>
+		/// <remarks>
+		/// Channel and alias are yielded together because they only mean anything as a pair: a workflow's
+		/// <c>triageAlias</c> is who to ping *in that workflow's channel*, and an issue spanning two streams can
+		/// legitimately reach two channels whose triage teams are different people.
+		/// </remarks>
+		IEnumerable<(string? Channel, string? Alias)> IssueTriageTargets(IIssue issue)
+		{
 			BuildConfig buildConfig = _buildConfig.CurrentValue;
 
 			foreach (IIssueStream stream in issue.Streams)
@@ -741,19 +765,51 @@ namespace HordeServer.Discord.Notifications
 				{
 					if (!String.IsNullOrEmpty(workflow.TriageChannel))
 					{
-						channels.Add(workflow.TriageChannel);
+						yield return (workflow.TriageChannel, workflow.TriageAlias);
 					}
 				}
 
 				if (!String.IsNullOrEmpty(streamConfig.TriageChannel))
 				{
-					channels.Add(streamConfig.TriageChannel);
+					yield return (streamConfig.TriageChannel, null);
 				}
 			}
+		}
 
-			return channels.Count > 0
-				? _channels.ResolveAll(channels.Distinct(StringComparer.Ordinal))
-				: _channels.ResolveCategory(DiscordChannelCategory.Job);
+		/// <summary>
+		/// Who to ping about an issue nobody has picked up, in the guild it is being posted to.
+		/// </summary>
+		/// <remarks>
+		/// **Only when the issue is unassigned.** Slack pings a workflow's <c>triageAlias</c> to find an owner, and
+		/// once somebody has taken it the ping has done its job - continuing to notify a whole team about an issue
+		/// that already has a name against it is how a triage channel gets muted.
+		///
+		/// Deliberately no escalation. Slack has an <c>escalateAlias</c> for issues that have gone unanswered too
+		/// long, but that is driven by a timer Horde does not hand to a sink; this fires on updates only.
+		/// </remarks>
+		/// <param name="issue">Issue being announced.</param>
+		/// <returns>The aliases to ping, which may be empty. Resolved to roles per destination when sending.</returns>
+		IReadOnlyList<string> ResolveTriageAliases(IIssue issue)
+		{
+			if (issue.OwnerId != null || issue.NominatedById != null || issue.ResolvedAt != null)
+			{
+				return [];
+			}
+
+			// Aliases rather than roles, because which role an alias means depends on the guild being posted to and
+			// one issue can reach channels in more than one. The send path knows the guild; this does not.
+			return [.. IssueTriageAliases(issue).Distinct(StringComparer.OrdinalIgnoreCase)];
+		}
+
+		IEnumerable<string> IssueTriageAliases(IIssue issue)
+		{
+			foreach ((string? _, string? alias) in IssueTriageTargets(issue))
+			{
+				if (!String.IsNullOrEmpty(alias))
+				{
+					yield return alias;
+				}
+			}
 		}
 
 		/// <summary>
@@ -1573,7 +1629,7 @@ namespace HordeServer.Discord.Notifications
 		/// <param name="forUsers">Users the notification was aimed at, named in plain text.</param>
 		/// <param name="cancellationToken">Cancellation token for the operation.</param>
 		public Task SendAsync(IReadOnlyList<DiscordDestination> destinations, DiscordEmbedBuilder embed, IEnumerable<IUser>? forUsers, CancellationToken cancellationToken)
-			=> SendAsync(destinations, embed, forUsers, null, cancellationToken);
+			=> SendAsync(destinations, embed, forUsers, null, null, cancellationToken);
 
 		/// <summary>
 		/// Posts an embed, with buttons, to a set of resolved destinations.
@@ -1586,8 +1642,12 @@ namespace HordeServer.Discord.Notifications
 		/// <param name="embed">What to post.</param>
 		/// <param name="forUsers">Users the notification was aimed at, named in plain text.</param>
 		/// <param name="components">Buttons to attach, or null for none.</param>
+		/// <param name="mentionAliases">
+		/// Horde user-group handles to ping, resolved to a role per destination. Aliases rather than roles because
+		/// a role id only means anything in its own guild, and one notification can reach channels in several.
+		/// </param>
 		/// <param name="cancellationToken">Cancellation token for the operation.</param>
-		public async Task SendAsync(IReadOnlyList<DiscordDestination> destinations, DiscordEmbedBuilder embed, IEnumerable<IUser>? forUsers, DiscordComponentBuilder? components, CancellationToken cancellationToken)
+		public async Task SendAsync(IReadOnlyList<DiscordDestination> destinations, DiscordEmbedBuilder embed, IEnumerable<IUser>? forUsers, DiscordComponentBuilder? components, IReadOnlyList<string>? mentionAliases, CancellationToken cancellationToken)
 		{
 			if (!_serverConfig.IsConfigured || destinations.Count == 0)
 			{
@@ -1606,28 +1666,58 @@ namespace HordeServer.Discord.Notifications
 					message.WithComponents(components);
 				}
 
+				IReadOnlyList<DiscordRole> roles = ResolveRoles(mentionAliases, destination.GuildId);
+
 				// A message in the catch-all says which Horde channel it was meant for. Without that the channel
 				// fills up with notifications nobody can trace back to a missing mapping.
 				string? note = destination.IsFallback && destination.SourceChannel != null
 					? $"Unmapped Horde channel {Code(destination.SourceChannel)}"
 					: null;
 
-				string content = String.Join(" · ", new[] { addressee.Text, note }.Where(x => x != null));
+				string? ping = roles.Count == 0 ? null : String.Join(' ', roles.Select(x => x.Mention));
+				string content = String.Join(" · ", new[] { ping, addressee.Text, note }.Where(x => x != null));
 
 				if (content.Length > 0)
 				{
 					message.WithContent(content);
 				}
 
-				// Only the people this notification is actually about may be pinged. Everything else - a step name, a
-				// commit description, an error line - is reproduced from somewhere else and must stay inert.
-				if (addressee.MentionedUserIds.Count > 0)
+				// Only the people and teams this notification is actually about may be pinged. Everything else - a
+				// step name, a commit description, an error line - is reproduced from somewhere else and must stay
+				// inert, which is why roles are listed explicitly rather than parsed out of the text.
+				if (addressee.MentionedUserIds.Count > 0 || roles.Count > 0)
 				{
-					message.WithAllowedMentions(DiscordAllowedMentions.ForUsers(addressee.MentionedUserIds));
+					message.WithAllowedMentions(
+						DiscordAllowedMentions.For(addressee.MentionedUserIds, roles.Select(x => x.RoleId)));
 				}
 
 				await _client.CreateMessageAsync(destination.ChannelId, message.Build(), cancellationToken);
 			}
+		}
+
+		/// <summary>
+		/// Turns Horde's user-group handles into the roles that can actually be pinged in a given guild.
+		/// </summary>
+		IReadOnlyList<DiscordRole> ResolveRoles(IReadOnlyList<string>? aliases, string? guildId)
+		{
+			if (aliases == null || aliases.Count == 0)
+			{
+				return [];
+			}
+
+			List<DiscordRole> roles = new List<DiscordRole>();
+
+			foreach (string alias in aliases)
+			{
+				DiscordRole? role = _discordUsers.GetRole(alias, guildId);
+
+				if (role != null && !roles.Any(x => String.Equals(x.RoleId, role.RoleId, StringComparison.Ordinal)))
+				{
+					roles.Add(role);
+				}
+			}
+
+			return roles;
 		}
 
 		/// <summary>
@@ -1688,7 +1778,7 @@ namespace HordeServer.Discord.Notifications
 
 			if (recipients.Count == 0)
 			{
-				await SendAsync(fallback, embed, null, components, cancellationToken);
+				await SendAsync(fallback, embed, null, components, null, cancellationToken);
 				return;
 			}
 
@@ -1705,7 +1795,7 @@ namespace HordeServer.Discord.Notifications
 
 			if (unreachable.Count > 0)
 			{
-				await SendAsync(fallback, embed, unreachable, components, cancellationToken);
+				await SendAsync(fallback, embed, unreachable, components, null, cancellationToken);
 			}
 		}
 

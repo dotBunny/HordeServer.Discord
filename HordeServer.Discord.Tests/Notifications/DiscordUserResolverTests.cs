@@ -84,7 +84,7 @@ namespace HordeServer.Discord.Tests.Notifications
 		{
 			DiscordUserResolver resolver = Create(Mapped());
 
-			Assert.AreEqual(TriageRoleId, resolver.GetRoleId("S0123456789"));
+			Assert.AreEqual(TriageRoleId, resolver.GetRole("S0123456789", null)?.RoleId);
 			Assert.IsTrue(resolver.IsRoleMapped("S0123456789"));
 		}
 
@@ -93,7 +93,7 @@ namespace HordeServer.Discord.Tests.Notifications
 		{
 			DiscordUserResolver resolver = Create(Mapped());
 
-			Assert.IsNull(resolver.GetRoleId("S9999999999"));
+			Assert.IsNull(resolver.GetRole("S9999999999", null));
 			Assert.IsFalse(resolver.IsRoleMapped("S9999999999"));
 		}
 
@@ -102,8 +102,54 @@ namespace HordeServer.Discord.Tests.Notifications
 		{
 			DiscordUserResolver resolver = Create(Mapped());
 
-			Assert.IsNull(resolver.GetRoleId(null));
-			Assert.IsNull(resolver.GetRoleId("   "));
+			Assert.IsNull(resolver.GetRole(null, null));
+			Assert.IsNull(resolver.GetRole("   ", null));
+		}
+
+		[TestMethod]
+		public void ARoleScopedToAGuildIsOnlyUsableThere()
+		{
+			DiscordConfig config = PostLoad(new DiscordConfig
+			{
+				Guilds = { ["main"] = "100000000000000001", ["other"] = "100000000000000002" },
+				Roles = { ["S0123456789"] = new DiscordRoleMapping { Guild = "main", Role = TriageRoleId } },
+			});
+
+			DiscordUserResolver resolver = Create(config);
+
+			Assert.AreEqual(TriageRoleId, resolver.GetRole("S0123456789", "100000000000000001")?.RoleId);
+			Assert.IsNull(resolver.GetRole("S0123456789", "100000000000000002"),
+				"A role id from another guild renders as raw text and pings nobody, which looks like a formatting "
+				+ "bug rather than a configuration one.");
+		}
+
+		[TestMethod]
+		public void ARoleWithNoGuildIsUsableAnywhere()
+		{
+			DiscordConfig config = PostLoad(new DiscordConfig
+			{
+				Guilds = { ["main"] = "100000000000000001" },
+				Roles = { ["S0123456789"] = new DiscordRoleMapping { Role = TriageRoleId } },
+			});
+
+			DiscordUserResolver resolver = Create(config);
+
+			Assert.IsNotNull(resolver.GetRole("S0123456789", "100000000000000001"));
+			Assert.IsNotNull(resolver.GetRole("S0123456789", "100000000000000002"),
+				"Unset is right for a single-guild install, where there is nothing to be ambiguous about.");
+		}
+
+		[TestMethod]
+		public void ARoleNamingAnUnknownGuildIsDropped()
+		{
+			DiscordConfig config = PostLoad(new DiscordConfig
+			{
+				Guilds = { ["main"] = "100000000000000001" },
+				Roles = { ["S0123456789"] = new DiscordRoleMapping { Guild = "typo", Role = TriageRoleId } },
+			});
+
+			Assert.AreEqual(0, config.ResolvedRoles.Count,
+				"Treating it as global instead would mention it in guilds it does not belong to.");
 		}
 
 		[TestMethod]
@@ -112,7 +158,7 @@ namespace HordeServer.Discord.Tests.Notifications
 			DiscordConfig config = PostLoad(new DiscordConfig
 			{
 				UserMap = { ["ada"] = "nonsense", [AdaEmail] = AdaDiscordId },
-				Roles = { ["alias"] = "#triage" },
+				Roles = { ["alias"] = new DiscordRoleMapping { Role = "#triage" } },
 			});
 
 			// PostLoad runs inside the server's config reload. Throwing would fail the whole reload and take the
@@ -124,7 +170,7 @@ namespace HordeServer.Discord.Tests.Notifications
 		static DiscordConfig Mapped() => PostLoad(new DiscordConfig
 		{
 			UserMap = { [AdaEmail] = AdaDiscordId },
-			Roles = { ["S0123456789"] = TriageRoleId },
+			Roles = { ["S0123456789"] = new DiscordRoleMapping { Role = TriageRoleId } },
 		});
 
 		static DiscordConfig PostLoad(DiscordConfig config)

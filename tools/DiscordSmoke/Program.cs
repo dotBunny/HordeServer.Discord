@@ -688,6 +688,16 @@ namespace DiscordSmoke
 				config.UserMap[Scenarios.RecipientEmail] = settings.UserId;
 			}
 
+			if (settings.RoleId != null)
+			{
+				config.Roles[Scenarios.TriageAlias] = new DiscordRoleMapping
+				{
+					Label = "smoke-triage",
+					Guild = "smoke",
+					Role = settings.RoleId,
+				};
+			}
+
 			config.PostLoad(new PluginConfigOptions(
 				ConfigVersion.Latest,
 				Array.Empty<IPluginConfig>(),

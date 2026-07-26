@@ -25,6 +25,16 @@ namespace DiscordSmoke
 
 		public string? UserId { get; init; }
 
+		/// <summary>
+		/// A role to try mentioning. Optional; without it the triage-ping scenario is skipped.
+		/// </summary>
+		/// <remarks>
+		/// **Pick one nobody is in.** The bot's own integration role is ideal - it exists in every guild the bot was
+		/// invited to, and its only member is the bot. Pointing this at a real team role means pinging that team
+		/// every time the smoke tool runs.
+		/// </remarks>
+		public string? RoleId { get; init; }
+
 		public required Uri DashboardUrl { get; init; }
 
 		/// <summary>
@@ -40,6 +50,7 @@ namespace DiscordSmoke
 				guild     {GuildId}
 				channel   {ChannelId}
 				user      {UserId ?? "<unset - direct message scenarios will be skipped>"}
+				role      {RoleId ?? "<unset - the triage ping scenario will be skipped>"}
 				dashboard {DashboardUrl}
 				""";
 
@@ -99,6 +110,7 @@ namespace DiscordSmoke
 				GuildId = guildId!,
 				ChannelId = channelId!,
 				UserId = Read("DiscordTestUserId"),
+				RoleId = Read("DiscordTestRoleId"),
 				DashboardUrl = dashboard,
 			};
 

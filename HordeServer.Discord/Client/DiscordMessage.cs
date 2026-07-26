@@ -78,6 +78,16 @@ namespace HordeServer.Discord.Client
 		public List<string>? Users { get; set; }
 
 		/// <summary>
+		/// Specific roles allowed to be pinged, whatever <see cref="Parse"/> says.
+		/// </summary>
+		/// <remarks>
+		/// Listed explicitly rather than by adding <c>roles</c> to <see cref="Parse"/>, which would honour every
+		/// role mention Discord can find in the text - including any that came out of a build log.
+		/// </remarks>
+		[JsonPropertyName("roles")]
+		public List<string>? Roles { get; set; }
+
+		/// <summary>
 		/// Renders every mention inert.
 		/// </summary>
 		public static DiscordAllowedMentions None { get; } = new DiscordAllowedMentions();
@@ -89,5 +99,23 @@ namespace HordeServer.Discord.Client
 		/// <returns>An allowed-mentions policy naming just those users.</returns>
 		public static DiscordAllowedMentions ForUsers(IEnumerable<string> userIds)
 			=> new DiscordAllowedMentions { Users = userIds.ToList() };
+
+		/// <summary>
+		/// Allows exactly the listed users and roles to be pinged, and nothing else.
+		/// </summary>
+		/// <param name="userIds">User snowflakes to allow. May be empty.</param>
+		/// <param name="roleIds">Role snowflakes to allow. May be empty.</param>
+		/// <returns>An allowed-mentions policy naming just those.</returns>
+		public static DiscordAllowedMentions For(IEnumerable<string> userIds, IEnumerable<string> roleIds)
+		{
+			List<string> users = [.. userIds];
+			List<string> roles = [.. roleIds];
+
+			return new DiscordAllowedMentions
+			{
+				Users = users.Count > 0 ? users : null,
+				Roles = roles.Count > 0 ? roles : null,
+			};
+		}
 	}
 }

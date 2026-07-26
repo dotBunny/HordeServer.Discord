@@ -8,6 +8,7 @@ using EpicGames.Horde.Logs;
 using HordeServer.Agents;
 using HordeServer.Configuration;
 using HordeServer.Devices;
+using HordeServer.Discord.Client;
 using HordeServer.Discord.Notifications;
 using HordeServer.Issues;
 using HordeServer.Logs;
@@ -101,7 +102,50 @@ namespace DiscordSmoke
 
 			new Scenario("issue-report", "The periodic triage digest for a workflow", (processor, ct)
 				=> processor.SendIssueReportAsync(IssueReport(), ct)),
+
+			new Scenario("triage-ping", "An unassigned issue pinging its triage role", (processor, ct)
+				=> TriagePingAsync(processor, settings, ct)),
 		];
+
+		/// <summary>
+		/// Posts a message mentioning the configured role, the way an unassigned issue would.
+		/// </summary>
+		/// <remarks>
+		/// Goes through <c>SendAsync</c> with an alias rather than through <c>NotifyIssueUpdatedAsync</c>, because
+		/// which alias applies to an issue comes from a workflow in Horde's <c>BuildConfig</c> and there is no Horde
+		/// behind this tool. What it does check is the half that only Discord can answer: whether
+		/// <c>&lt;@&amp;id&gt;</c> renders as a role chip rather than raw text, and whether the
+		/// <c>allowed_mentions</c> shape is accepted.
+		/// </remarks>
+		static Task TriagePingAsync(DiscordNotificationProcessor processor, SmokeSettings settings, CancellationToken cancellationToken)
+		{
+			if (settings.RoleId == null)
+			{
+				Console.Write("(no DiscordTestRoleId) ");
+				return Task.CompletedTask;
+			}
+
+			return processor.SendAsync(
+				[new DiscordDestination(settings.ChannelId, settings.GuildId, "smoke-test")],
+				new DiscordEmbedBuilder()
+					.WithTitle("🔴 Issue 4823: Nobody has picked this up")
+					.WithDescription("An unassigned issue pings the workflow's triage alias. Once somebody takes it, "
+						+ "the pings stop - that is what keeps a triage channel from being muted.")
+					.WithColor(0xED4245)
+					.AddField("Status", "Unassigned", true),
+				null,
+				new DiscordComponentBuilder().AddButton(
+					new DiscordCustomId(DiscordCustomId.IssueScope, "4823", "ack").ToString(),
+					"Acknowledge",
+					DiscordButtonStyle.Success),
+				[TriageAlias],
+				cancellationToken);
+		}
+
+		/// <summary>
+		/// The Horde-side alias the smoke role map is keyed on. Slack-shaped, like the channel id.
+		/// </summary>
+		public const string TriageAlias = "S0SMOKETRIAGE";
 
 		/// <summary>
 		/// An unassigned issue, so the buttons are all present and the message lands in a channel.
