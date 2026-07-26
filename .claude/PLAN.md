@@ -1,10 +1,23 @@
 # Horde → Discord Notification Plugin — Investigation & Plan
 
-> **Status: Phases 0–4 complete**, built 2026-07-25/26 and **verified against a real Discord server**.
+> **Status: Phases 0–4 complete**, built 2026-07-25/26, **verified against a real Discord server** and
+> **running on a live Horde server** (2026-07-26).
 > All seventeen `INotificationSink` members deliver. The gateway holds a session, triage buttons call
 > Horde's `IssueService`, the hybrid Mark Fixed modal round-trips, and each issue keeps one message in
 > a thread that is rewritten as it changes. What remains is the deliberate non-goals in §3.4 and the
 > `/link` slash command deferred in §7.
+>
+> **The last gap in the verification story closed 2026-07-26.** Everything through Phase 4 had been
+> driven by `DiscordSmoke` against stand-in Horde data — the plugin had never run inside the server it
+> is written for. It now has: installed into a real Horde server and left running against a real
+> stream, where it is discovered and registers, real jobs and issues produce the messages, and a button
+> press writes back to Horde's own issue database. That last one is the one that mattered, because
+> `HordeIssues` is the one class here that no test can reach (§ Phase 4) and it was the only path in
+> the plugin whose first real execution would be in production.
+>
+> What remains unproven is **variety**, not correctness: one server and one studio's configuration.
+> The parts of Horde's config surface that deployment does not exercise are still covered only by
+> `dotnet test` and `DiscordSmoke`.
 >
 > Every phase gate found something the unit tests could not: emoji shortcodes Slack resolves and
 > Discord does not (Phase 3), a smoke tool structurally incapable of failing (Phase 3), and a modal
@@ -913,6 +926,12 @@ routed but nothing acted on them — a press logged *"Nothing is registered for 
   MongoDB in its constructor. Without it nothing downstream of a press could be tested, and running
   `dotnet test` without MongoDB or Redis is a property worth protecting. The adapter behind it is one
   call per method and is **the only class in the plugin with no coverage**, deliberately.
+
+  **It has since been exercised on a live server (2026-07-26)** — a press on a real issue reached a
+  real `IssueService` and the write stuck. That does not give it coverage and does not relax the
+  one-call-per-method rule, which exists so the untested part stays too small to hide anything; it
+  does mean a change here is a change to something known to work, and worth re-checking against a
+  running server rather than against `dotnet test` alone.
 - **The user map is now read backwards.** A press identifies its author with a Discord snowflake and
   every issue operation is audited against a Horde user, so `IDiscordUserResolver.GetEmail` resolves
   snowflake → email and `IUserCollection.FindUserByEmailAsync` finishes the job. An unmapped presser

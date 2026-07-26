@@ -13,10 +13,22 @@ into a Horde server's application directory — no changes to Horde or to Unreal
 
 **The design and roadmap live in [`.claude/PLAN.md`](.claude/PLAN.md). Read it before doing
 substantive work** — it records the architecture investigation (with engine file/line references),
-the decisions taken and why, and the phase breakdown. Current status: **Phases 0–4 complete and
-verified against a real Discord server** (2026-07-26). All seventeen `INotificationSink` members
-deliver; the gateway holds a session; triage buttons call Horde's `IssueService`; the Mark Fixed modal
-round-trips; and each issue keeps one message in a thread, rewritten as it changes.
+the decisions taken and why, and the phase breakdown. Current status: **Phases 0–4 complete, and
+running on a live Horde server** (2026-07-26). All seventeen `INotificationSink` members deliver; the
+gateway holds a session; triage buttons call Horde's `IssueService`; the Mark Fixed modal round-trips;
+and each issue keeps one message in a thread, rewritten as it changes.
+
+The plugin is **no longer verified only against stand-in data**. It has been installed in a real Horde
+server and left running against a real stream: it is discovered and registers, real jobs and issues
+produce the messages, and a button press mutates Horde's own issue database. Two consequences for
+working here. First, `IHordeIssues`/`HordeIssues` — the adapter with no test coverage, kept to one call
+per method precisely because nothing could exercise it — **has now been exercised**, so a change to it
+is a change to something known to work rather than to something merely plausible. Second, the sink now
+runs where a throw would reach `NotificationService`; the never-throw contract in `DiscordClient` is
+load-bearing in fact, not just in principle.
+
+What is still thin is **variety**: one server, one studio's configuration. The parts of Horde's config
+surface that deployment does not use are still only covered by `dotnet test` and `DiscordSmoke`.
 
 ## The two trees
 

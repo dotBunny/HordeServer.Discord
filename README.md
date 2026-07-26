@@ -9,16 +9,15 @@ outcomes, build health issues, configuration failures and farm reports — to Di
 It runs **alongside** Horde's built-in Slack support rather than replacing it, so you can adopt it
 gradually or run both indefinitely.
 
-> [!WARNING]
-> **Early development.** All of Horde's notifications are delivered — job and step outcomes,
-> configuration failures, agent and device reports, test health, and build health issues with
-> interactive triage. Every message type has been sent to a real Discord server and looked at, and the
-> triage buttons, the Mark Fixed dialog and the issue threads have all been driven end to end by hand.
+> [!NOTE]
+> **Young, but running against a real server.** All of Horde's notifications are delivered — job and
+> step outcomes, configuration failures, agent and device reports, test health, and build health issues
+> with interactive triage.
 >
-> **What has not been exercised is a running Horde server.** Everything so far has been verified by
-> driving the plugin directly with stand-in data. The code that writes back to Horde's issue database
-> when somebody presses a button has never executed against a real one. Point this at a test channel
-> and a test stream before you trust it on a busy farm.
+> It has been installed on a live Horde server and left running against a real stream: the plugin loads
+> and registers, real jobs and issues produce the messages, and the triage buttons write back to Horde's
+> own issue database. What is still thin is *variety* — one server and one studio's configuration, so
+> the parts of Horde's config surface nobody here uses have been exercised only with stand-in data.
 >
 > Installing it is safe regardless: with no bot token or no channel configured, it loads and does
 > nothing, and it cannot disturb the Slack sink either way.
@@ -41,7 +40,8 @@ There are no published binaries yet, so installation means building from source.
 ### Engine compatibility
 
 This plugin compiles against internal Horde interfaces that carry no compatibility guarantee, so the
-engine it was built against matters. The current code is built and verified against:
+engine it was built against matters. The current code is built against — and is running against — a
+server of this vintage:
 
 | | |
 |---|---|
