@@ -251,6 +251,16 @@ rebuild — a stale DLL against a newer server fails at plugin load rather than 
   when it compiles it, so the install must be one call frame above the first use. The tests do it in a
   `[ModuleInitializer]`; `PluginProbe` and `DiscordSmoke` do it in a `Main` that immediately hands off
   to a `NoInlining` method. Symptom when missing: `FileNotFoundException` for `HordeServer.Shared`.
+- **Resolving Horde's managed assemblies is not enough — some are only a wrapper around a native one.**
+  `EpicGames.IoHash` p/invokes `blake3_dotnet`, which the server ships under `runtimes/{rid}/native`
+  rather than beside the managed DLLs, a layout only its `deps.json` knows how to read. So
+  `EngineAssemblyResolver` installs a `ResolvingUnmanagedDll` handler beside the managed one. Found on
+  the 5.8.0 → 5.8.1 upgrade (2026-07-30): `StreamConfig.PostLoad` began hashing each stream into a
+  `Revision` field (`StreamConfig.cs:481-483`), which took every test that builds a `BuildConfig`
+  from green to `DllNotFoundException`. The failure lands far from the cause — an engine method deep
+  inside `PostLoad`, not the load of the wrapper — and it only bites *outside* the server. Match the
+  RID exactly rather than scanning `runtimes` by filename: a win-arm64 binary sits beside the win-x64
+  one, and loading the wrong architecture fails worse, as `BadImageFormatException`.
 - **`ILogEventData` lives in `HordeServer.Compute`**, not `HordeServer.Build` — it reaches
   `INotificationSink` through the job-step members. Not discoverable by reading the interface; only
   the compiler tells you.

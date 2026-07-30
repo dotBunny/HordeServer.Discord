@@ -45,8 +45,8 @@ server of this vintage:
 
 | | |
 |---|---|
-| Unreal Engine | **5.8.0** (`release` UE5) |
-| Horde server binaries | built 2026-07-25 |
+| Unreal Engine | **5.8.1** (`release` UE5) |
+| Horde server binaries | built 2026-07-30 |
 
 Check your own with `Engine/Build/Build.version`. A source build reports `"Changelist": 0`, so there is
 usually no changelist to compare against — the version and the build date are the practical identity.
